@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -178,6 +179,34 @@ func TestSchemasDoNotReserveWorkerSession(t *testing.T) {
 	if !valid.IsError || calls != 1 || !strings.Contains(textOf(valid), "test admission") {
 		t.Fatalf("execution failed to reserve lazily: %+v, calls=%d", valid, calls)
 	}
+}
+
+func TestLargeSchemasAndCatalogDoNotBlockExec(t *testing.T) {
+	session := codemode.NewLocalSession(codemode.Limits{MaxToolCalls: 1})
+	defer session.Close()
+	nested := make([]toolapi.Tool, 4096)
+	for i := range nested {
+		nested[i] = fakeTool{name: fmt.Sprintf("document_%d", i)}
+	}
+	nested[0] = largeSchemaTool{fakeTool: fakeTool{name: "document_0"}}
+	prepared := Prepare(nested)
+	set := Set{Session: session, Catalog: prepared}
+	ctx := toolapi.WithExecutionIdentity(t.Context(), toolapi.ExecutionIdentity{CallID: "large"})
+	result := set.Build()[0].Execute(ctx, map[string]any{"code": "text(ALL_TOOLS.length); text(typeof tools.document_4095)"})
+	if result.IsError || !strings.Contains(textOf(result), "4096") || !strings.Contains(textOf(result), "function") {
+		t.Fatalf("large catalog failed: %+v", result)
+	}
+	if strings.Contains(set.Build()[0].Prompt(), "large_schema_marker") {
+		t.Fatal("schema duplicated into exec declaration")
+	}
+}
+
+type largeSchemaTool struct{ fakeTool }
+
+func (t largeSchemaTool) ToolSpec() toolapi.Spec {
+	spec := t.fakeTool.ToolSpec()
+	spec.Parameters["description"] = strings.Repeat("large_schema_marker", 14000)
+	return spec
 }
 
 type fakeTool struct {

@@ -28,6 +28,7 @@ MCP server 配置独立于 `ki.toml`，使用两个 JSON 文件：
       "envVars": ["DOCS_API_TOKEN"],
       "startupTimeoutSeconds": 10,
       "toolTimeoutSeconds": 60,
+      "maxConcurrent": 8,
       "disabledTools": ["delete_document"],
       "required": false
     },
@@ -47,6 +48,13 @@ MCP server 配置独立于 `ki.toml`，使用两个 JSON 文件：
 
 `enabled` 缺省为 true；`required` 缺省为 false。启动与调用超时的零值分别使用 10 秒和 60
 秒，不表示无限等待。
+
+### 并发策略
+
+`maxConcurrent` 为同一服务器在共享调度器中的并发上限，零值使用 8，负值拒绝。
+缺省仅 `readOnlyHint: true` 的工具可并行，其它工具在所属服务器组独占。可选 `parallel`
+布尔值显式覆盖该服务器的并行准入策略；它不会改写工具真实的只读 hint 或授予新权限。
+direct 和 Code Mode 嵌套调用共享同一策略，活动占用保持原配置。
 
 ### 工具过滤
 
@@ -103,11 +111,15 @@ AfterTool 重写/脱敏 Content 后仍泄露旧的正文副本。宿主策略若
 2. 模型先看到 `search_tool` 和有界来源摘要；不会预先收到全部 MCP 参数 schema。
 3. `search_tool({query, limit?})` 在宿主对工具名称、描述、来源和参数做本地词法 BM25 搜索，
    不访问 MCP 服务器搜索接口，也不使用 embedding。
-4. 成功结果返回匹配工具的完整 schema。下一次模型请求按已接受的搜索结果补充声明；重载时从
-   配对的 assistant search 调用与成功 toolResult 中恢复，始终重新对照当前允许目录。
+4. 小声明直接返回完整 schema；较大声明返回 `schema_pages` 取页提示。用
+   `search_tool({name, cursor?})` 获取完整工具 Spec JSON 的连续 UTF-8 分片，不能与 query/limit
+   混用。`schema_page` 含 name、digest、offset、total_bytes、fragment 和可选 next_cursor；
+   按 next_cursor 继续直到它消失，cursor 绑定当前声明 SHA-256 和字节偏移。
+5. 下一次模型请求只为真正完整交付的声明补充直接工具 schema；重载从配对成功结果的实际
+   正文重建，逐段核对当前目录、digest、偏移与连续完整内容，不信任 Details 或孤立最后页。
 
 **没有可用的 `search_tool`，就没有 Deferred。** 关闭该工具或用 activeTools 排除它后，允许
-的 MCP 工具直接进入 provider tools 和 exec 工具描述。没有 MCP 工具时，不发布空搜索入口。
+的 MCP 工具直接进入 provider tools；exec 仍只保留短元数据和引用。没有 MCP 工具时，不发布空搜索入口。
 
 三个 provider 协议都使用普通 function tool `search_tool`，不是 Codex 专用的 Responses
 `tool_search_call`/`tool_search_output`。搜索输出在工具正文中，后续真实 schemas 在既有
@@ -119,12 +131,18 @@ request_header/模型请求中；没有新增 REST 路由或伪造 provider 消�
 
 搜索默认 8 条，limit 范围 1–32，query 最多 4096 UTF-8 字节；索引每工具元数据最多 64 KiB，
 来源摘要总计 4 KiB。结果正文最多 12 KiB，完整 schema 放不下时明确报告省略，绝不截断参数
-定义后冒充完整 schema，也不暗中激活未返回的声明。
+定义后冒充完整 schema，也不暗中激活未返回的声明。大声明改用取页提示而非永久省略；
+每页 JSON 正文仍不超过 12 KiB，转义与 UTF-8 边界计入预算。
+
+Manager 缓存最多 8 个允许工具投影的搜索索引，按显式不可变工具身份与顺序复用，并以
+序列化声明和索引项的估算成本控制在 32 MiB；超大索引正常使用但不缓存。list_changed、
+连接重建或 activeTools 改变后，下一次 occupy 选择新索引，旧占用不受影响。普通可变工具
+未声明不可变身份时不复用。adapter 参数投影用递归副本，不能反向修改目录。
 
 ## 与 Code Mode 配合
 
-Code Mode 固定为 `mixed`，保留直接工具和 `exec`/`wait`；搜索后把声明同时加入 provider
-tools 和 exec 描述。
+Code Mode 固定为 `mixed`，保留直接工具和 `exec`/`wait`；完整披露后把 schema 加入 provider
+tools，exec 只增加短元数据与直接声明指引，避免两份完整 schema。
 
 Deferred 是声明披露优化，**不是权限加载机制**：
 

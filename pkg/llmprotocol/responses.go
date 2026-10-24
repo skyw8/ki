@@ -505,7 +505,7 @@ func parseResponsesSSE(event, data string, acc *Message) sseParseResult {
 			return sseParseResult{err: errResponsesFunctionCallEmptyCallID}
 		}
 		acc.StopReason = "toolUse"
-		return sseParseResult{}
+		return sseParseResult{delta: AssistantDelta{Type: "toolcall_complete", ToolCallID: c.ID, ToolName: c.Name, Partial: *acc}, emit: true}
 	case "response.custom_tool_call_input.delta":
 		itemID, err := requiredResponseItemID(obj)
 		if err != nil {
@@ -534,7 +534,7 @@ func parseResponsesSSE(event, data string, acc *Message) sseParseResult {
 			return sseParseResult{err: errResponsesCustomToolCallEmptyCallID}
 		}
 		acc.StopReason = "toolUse"
-		return sseParseResult{}
+		return sseParseResult{delta: AssistantDelta{Type: "toolcall_complete", ToolCallID: c.ID, ToolName: c.Name, Partial: *acc}, emit: true}
 	case "response.completed", "response.done", "response.incomplete", "response.failed", "response.cancelled", "error":
 		response := responseObject(obj)
 		setResponseID(acc, obj)

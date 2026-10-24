@@ -24,6 +24,7 @@ func TestMCPValidation(t *testing.T) {
 		{URL: "file:///tmp/server"}, {URL: "https://u:p@example.org/mcp"},
 		{URL: "https://example.org/mcp#fragment"}, {URL: "https://example.org", EnvVars: []string{"X"}},
 		{Command: "server", CWD: filepath.Join("relative", "path")},
+		{Command: "server", MaxConcurrent: -1},
 		{Command: "server", ToolTimeoutSeconds: -1}, {Command: "server", StartupTimeoutSeconds: -1},
 		{Command: "server", Env: map[string]string{"BAD=NAME": "value"}},
 		{Command: "server", EnvVars: []string{"BAD=NAME"}},
@@ -40,7 +41,7 @@ func TestMCPValidation(t *testing.T) {
 
 func TestMCPDefaultsAndRawFilters(t *testing.T) {
 	s := MCPServer{}
-	if !s.IsEnabled() || s.StartupTimeout() != 10*time.Second || s.ToolTimeout() != time.Minute {
+	if !s.IsEnabled() || s.Concurrency() != 8 || s.StartupTimeout() != 10*time.Second || s.ToolTimeout() != time.Minute {
 		t.Fatalf("defaults %+v", s)
 	}
 	s.EnabledTools = []string{"raw-tool"}

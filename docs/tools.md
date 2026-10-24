@@ -27,15 +27,15 @@ system prompt 组装阶段（见 [architecture.md](architecture.md)）。
 
 | 工具 | 参数 | 结果 |
 |---|---|---|
-| `read` | 文本模型：`file_path`、可选行分页 `offset` / `limit`；图片模型另有 `pages` | 原文，**不打** `cat -n`；返回结构化截断信息。只有 `input` 含 `image` 的模型能读图片和 PDF；`.ipynb` 按 cell |
+| `read` | 文本模型：`file_path`、可选行分页 `offset` / `limit`，长行续读 `byte_offset`；图片模型另有 `pages` | 原文，**不打** `cat -n`；返回结构化截断信息。只有 `input` 含 `image` 的模型能读图片和 PDF；`.ipynb` 按 cell |
 | `write` | `file_path`、`content` | `Successfully wrote N bytes to …`；不要求先 read。details 带 `path`、`bytes`、`lines`、`created` |
 | `edit` | 单次：`file_path`、`old_string`、`new_string`、`replace_all`；批量：`file_path`、`edits[]` | 精确替换；批量替换基于同一原文且不得重叠。模型只看到简短摘要，diff/patch 在 details |
 | `apply_patch` | Codex `*** Begin Patch` freeform grammar；每个路径只出现一次，同文件修改合并进一个 update block | 明确声明 native patch 能力的 add/update/delete/move 批量补丁；完整预检后才写入，details 带每个文件的 unified diff |
 | `grep` | `pattern`、`path`、`glob`、`output_mode`、`respect_gitignore`、上下文/分页/类型参数 | 基于内置 ripgrep；默认尊重 `.gitignore`；details 与模型看到同一页 |
 | `glob` | `pattern`、`path`、`respect_gitignore` | 基于内置 ripgrep `--files`；返回按修改时间排序的路径、root、limit、截断和统计元数据 |
-| `exec_command` | `cmd`、可选 `workdir` / `shell` / `login` / `tty` / `yield_time_ms` / `max_output_tokens` | 启动新进程，返回增量输出、退出码或数值 `session_id` |
-| `write_stdin` | `session_id`、可选 `chars` / `yield_time_ms` / `max_output_tokens` | 写入 PTY 或观察新输出；Ctrl-C 是中断请求 |
-| `spawn_agent` | `task_name`、`message`、可选 `fork_turns` | 异步创建具名 child，返回 canonical task path 和 agent/session ID |
+| `exec_command` | `cmd`、可选 `workdir` / `shell` / `login` / `tty` / `yield_time_ms` / `max_output_tokens` / `include_summary` | 启动新进程，返回增量输出、退出码或数值 `session_id` |
+| `write_stdin` | `session_id`、可选 `chars` / `yield_time_ms` / `max_output_tokens` / `include_summary` | 写入 PTY 或观察新输出；Ctrl-C 是中断请求 |
+| `spawn_agent` | `task_name`、`message`、可选 `fork_turns` / `model` / `effort` | 异步创建具名 child，返回 canonical task path 和 agent/session ID；model/effort 未指定时按 parent 规则继承 |
 | `send_message` | `target`、`message` | QueueOnly：接受上下文，唤醒正在等待的目标，不启动 idle agent |
 | `followup_task` | `target`、`message` | TriggerTurn：在同一 agent 上开始新任务；busy 时持久排队，root 拒绝 |
 | `wait_agent` | 可选 `timeout_ms` | 观察调用方 mailbox / user steer；不消费完成结果、不停止 agent |
@@ -144,14 +144,14 @@ details 在保留工具原有字段的同时挂一个保留键 `spill`：
 ### 不参与 spool 的结果
 
 - 已带完整输出文件的工具结果（`exec_command` / `write_stdin` 的 `output_file`）和已带分页
-  游标的工具结果（`read` 的 `next_offset`）原样保留：它们本身就是「完整内容 + 续读方式」，
+  游标的工具结果（`read` 的 `next_offset` / `next_byte_offset`）原样保留：它们本身就是「完整内容 + 续读方式」，
   再 spool 一次会让 read 指向自己那一页。
 - 用 `read` 读 spill 文件不会二次落盘（store 只 spill 不属于自己的路径）。
 - `read` 的一页（2000 行 / 50 KB）与 shell 的 incremental output budget 各自生效，不叠加
   统一 preview budget。
 
 `exec_command` 的完整输出文件也由该 store 创建：进程日志落在同一个 session 目录里，随
-session 关闭一起删除；store 拒绝创建时退回进程临时文件，任务本身照常运行。
+session 关闭一起删除。生产 store 的终端 writer 按独立配额计费，创建失败直接报告；不退回不计费的文件绕过配额。
 
 ### 遥测
 
@@ -189,13 +189,13 @@ toolResult 保留模型请求的拼写。`requestedToolName` 在执行事件中�
 - 相对路径按 session cwd 解析；返回原文，不添加行号。
 - 普通文本和所有 tool-output spill 文件共用 `offset` / `limit` 分页；超过 2000 行或 50 KB
   时保留头部，并提示下一次读取的 `offset`（这类结果自带游标，不再进 spool）。
-- 分页只使用 `offset` / `limit` 行范围参数；两者可单独使用，也可一起使用。
-- details 包含总字节/行数、当前输出大小、截断原因以及 `next_offset`。
+- `offset` / `limit` 保持行范围分页；两者可单独使用，也可一起使用。单行超过 50 KiB 时返回 UTF-8 安全前缀及 `next_byte_offset`，不伪造跳到下一行的游标。续读使用零基原始文件字节 `byte_offset`，必须位于 UTF-8 边界，不与 `offset` 同时使用；`limit` 仍限制行数。
+- details 包含精确总字节/行数（末尾换行计入空行）、当前输出大小、截断原因以及 `next_offset` 或 `next_byte_offset`。文本按 64 KiB chunk 扫描并验证整文件 UTF-8，只保留有界页/行片段；为精确 totals 仍是 O(file) 读取，不建立全文件字符串或行索引，CRLF 原样保留。
 - `ToolProfile.input` 含 `image` 时才支持图片、PDF 和 `pages`；文本模式在执行阶段也会拒绝
   图片和 PDF。
 - 图片进入模型前限制到 2000×2000 和 4.5 MB；需要时缩放并转成 PNG/JPEG，details 记录
   处理前后的尺寸、格式和大小。
-- 文件访问通过可替换的 `readOperations`；默认本地实现会在每个文件操作前后检查取消。
+- 文件访问通过可替换的 `ReadOperations`（Stat / Open / ReadFile）；文本流扫描每个 chunk 检查取消，图片、PDF、notebook 仍走格式专用的完整读取路径。
 - `.ipynb` 按 cell 返回。不能读目录；列路径用 `glob`。
 
 ### write
@@ -319,7 +319,7 @@ run_in_background、command、timeout 参数。
 
 - `login=true`、`tty=false`、`yield_time_ms=10000`、`max_output_tokens=10000` 为默认值。
 - exec 观察范围 250–30000ms；非负整数 yield 在转换 duration 前 clamp，负值拒绝。输出预算
-  必须为正整数，内部封顶 10000 tokens。
+  必须为正整数，内部封顶 10000 tokens，结果公开 `requested_output_tokens` / `effective_output_tokens`。按每 token 约 4 bytes 计算共享文本预算；默认总计 40000 bytes。`include_summary=true` 时，`output_summary` 至多占一半预算，增量 `output` 使用余量；关闭摘要时全部给增量。`summary_bytes` 包含摘要分隔标记，`summary_omitted_bytes` 只计未保留的源字节。
 - 达到观察预算返回 handle，命令继续运行，没有前台提升或 sleep 特例。短观察期限可能在
   shell/子进程启动、尚无输出时返回 running（尤其 Windows Git Bash/ConPTY）；需要终态的
   调用方应使用 `write_stdin` 在合理期限内继续观察，而不能把首次 running 当作命令失败或
@@ -339,11 +339,17 @@ run_in_background、command、timeout 参数。
   普通输入，但 `chars="\u0003"` 仍能请求进程组中断。Ctrl-C 不保证进程退出，强制停止由
   session abort 的 process scope 执行。
 
+### Shell snapshot
+
+- Linux/macOS 的 Bash login 调用可缓存 profile 初始化后的变量（含非 export 变量）、函数、alias、选项、umask 与 cwd。Windows/PowerShell、`login=false` 和不支持的 shell 保持原启动方式。
+- 缓存按 manager 隔离；shell 身份、cwd、继承环境、常见系统/用户 profile 及 BASH_ENV 的 stat/内容变化失效，reload 调用 `InvalidateShellSnapshots`。30s TTL 限制未跟踪的任意 source 依赖/外部状态的陈旧时间，不承诺实时追踪任意依赖。
+- capture 最多 2s、文件最多 1 MiB；索引最多 16 个、manager 生命周期最多保留 64 个 capture 文件，超过后回退原启动。失败、有 profile 输出或不支持环境均回退，不吞 profile 输出；失败捕获可能已执行 profile 副作用，回退可能再次初始化。快照不重放后台任务或 trap，不是持久交互 shell。
+
 ### 输出
 
 - stdout/stderr 混排；原始字节写入完整输出文件。实时增量去除 ANSI/控制字符，UTF-8 边界
   安全。内存采用最多 1 MiB 的环形缓冲，不在每次溢出时复制整个窗口；模型每次收到尚未读出
-  的增量并受输出预算限制，预算超过上限会被截断；完整输出可通过 `read` 分页。
+  的增量并受输出预算限制，预算超过上限会被截断；预算内 raw 日志可通过 `read` 分页。可选头尾摘要独立放在 `output_summary`，不消费或跳过增量游标：游标只按 `output` 实际返回字节推进。
 - 实时快照保留 16 KiB 尾部，delta 至多 8 KiB；进度观察节流 100ms，单进程最多 10000 个中间
   更新。manager listener 异步交付，只保留最新 pending progress；慢持久化不能阻塞原始输出
   drain。中间预览可合并或省略，不保证 delta 拼接能还原日志；初始/终态保留，finish 发布
@@ -355,8 +361,8 @@ run_in_background、command、timeout 参数。
   256 个。已消费完的退出进程立即释放 retention window，仍保留不可变的 16 KiB 预览和游标，
   避免每 manager 额外钉住 256 MiB 的无用已读缓冲。达到 live 上限直接拒绝创建，不淘汰仍在
   运行的进程。
-- 完整 shell 日志由 OutputSpool 创建，但不走普通文本结果的 8 MiB 前缀截断；创建失败时退回
-  由 manager 清理的临时文件。写入失败仍继续 drain 外部命令，并单独报告 I/O 故障。
+- shell raw 日志由计费 writer 创建，独立默认上限为 64 MiB/file、512 MiB/session、2 GiB/service，分别由 `output.Config.MaxProcessFileBytes` / `MaxProcessSessionBytes` / `MaxProcessServiceBytes` 覆盖，不套普通结果的 8 MiB。writer 预留配额后在全局锁外写盘；session close 关闭活 writer、释放账额并拒绝后续写入。
+- 配额耗尽或 I/O 失败后继续 drain 外部命令，结果以 `error`、`output_file_bytes`、`output_file_incomplete` 明示 raw 仅能恢复已写前缀，不能声称文件仍完整。内存尾部/增量可继续显示后续输出。生产计费 store 创建失败直接报告；无 store 的独立 manager 和旧测试 spool 才使用临时文件回退。
 - 进程退出只释放 OS 资源；显式停止终止进程树，已退出对象不再发送 raw process-group
   signal。session 删除/server shutdown 才关闭 manager 并清理日志；Close 完成包含最后
   listener 回调，不能在自己的 listener 中同步关闭同一 manager。
@@ -403,7 +409,7 @@ manager 单独拥有进程。工具层只依赖 server 实现的 `agent.Runtime`
 
 `fork_turns` 默认 all，可为 none 或正整数（字符串），首尾空白统一忽略；复制完整的已完成
 user turn，排除触发当前轮的 user 输入及之后内容。QueueOnly mailbox 消息不算新的 user
-turn；继承工具调用/结果配对与附件路径。child 使用 parent 的 provider/model/cwd，身份放在
+turn；继承工具调用/结果配对与附件路径。child 默认使用 parent 的 provider/model/cwd；可选 `model` 指定 child 模型，指定新模型而未指定 `effort` 时使用该模型默认 thinking effort，身份放在
 首条 user 信封里。默认 system/tools 前缀相同；全局禁用项同样生效，extension activeTools
 保持 session-scoped 选择，不是继承的安全权限。
 

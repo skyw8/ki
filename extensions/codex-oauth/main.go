@@ -202,6 +202,9 @@ func (s *sidecar) handle(m object) {
 				}
 				var upstream *httpFailure
 				if errors.As(err, &upstream) {
+					if !upstream.retryAfter.IsZero() {
+						params["retryAfter"] = upstream.retryAfter.UnixMilli()
+					}
 					switch upstream.status {
 					case 400, 401, 403, 404, 405, 410, 413, 415, 422:
 						params["nonRetryable"] = true

@@ -33,11 +33,16 @@ type Shell struct {
 	powerShellEdition powerShellEdition
 	setShellEnv       bool
 	pathDirs          []string
+	snapshotPath      string
 }
 
 func (s Shell) available() bool { return s.path != "" }
 
 func (s Shell) args(command string) []string {
+	if s.snapshotPath != "" {
+		quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
+		return []string{"--noprofile", "--norc", "-c", ". " + quote(s.snapshotPath) + " || exit; builtin eval -- " + quote(command), s.path}
+	}
 	if s.kind == shellPowerShell {
 		command += "\n; $__ki_exit = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } elseif ($?) { 0 } else { 1 }\n; exit $__ki_exit"
 		args := []string{}
@@ -69,6 +74,9 @@ func (s Shell) env() []string {
 		env = withBundledSearchTools(env, dir, s.pathDirs, s.kind)
 	} else if len(s.pathDirs) > 0 {
 		env = prependPath(env, s.pathDirs)
+	}
+	if s.snapshotPath != "" {
+		env = setEnvValue(env, "BASH_ENV", "")
 	}
 	if !s.setShellEnv {
 		return env

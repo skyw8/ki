@@ -55,8 +55,9 @@ func (execCommandTool) Parameters() map[string]any {
 		"shell":             map[string]any{"type": "string", "description": "Shell executable; defaults to the resolved session shell."},
 		"login":             map[string]any{"type": "boolean", "description": "Use login/profile behavior. Defaults to true."},
 		"tty":               map[string]any{"type": "boolean", "description": "Allocate a PTY/ConPTY. Defaults to false (pipes)."},
+		"include_summary":   map[string]any{"type": "boolean", "description": "Include a separate head/tail summary using at most half the shared output budget; incremental output uses the remainder and only returned incremental bytes advance its cursor."},
 		"yield_time_ms":     map[string]any{"type": "integer", "minimum": 250, "maximum": 30000, "description": "Observation budget; defaults to 10000ms. Does not terminate the process."},
-		"max_output_tokens": map[string]any{"type": "integer", "minimum": 1, "description": "Output budget; defaults to 10000 tokens."},
+		"max_output_tokens": map[string]any{"type": "integer", "minimum": 1, "description": "Requested output budget; defaults to 10000 tokens, capped at 10000. The result reports requested and effective budgets."},
 	})
 }
 
@@ -125,7 +126,7 @@ func (t execCommandTool) ExecuteWithProgress(ctx context.Context, args map[strin
 		return support.Error(err.Error())
 	}
 	yield := max(250, min(30000, support.IntArg(args, "yield_time_ms", 10000)))
-	snapshot, err := t.processes.Interact(ctx, id, "", time.Duration(yield)*time.Millisecond, support.IntArg(args, "max_output_tokens", 10000), processEmit(emit))
+	snapshot, err := t.processes.InteractWithOptions(ctx, id, "", time.Duration(yield)*time.Millisecond, observationOptions(args), processEmit(emit))
 	return processResult(snapshot, err)
 }
 
@@ -147,8 +148,9 @@ func (writeStdinTool) Parameters() map[string]any {
 	return support.ObjectSchema([]any{"session_id"}, map[string]any{
 		"session_id":        map[string]any{"type": "integer", "minimum": 1, "maximum": (1 << 53) - 1, "description": "Terminal handle returned by exec_command."},
 		"chars":             map[string]any{"type": "string", "description": "Input; defaults to empty for output collection."},
+		"include_summary":   map[string]any{"type": "boolean", "description": "Include a separate head/tail summary using at most half the shared output budget, without skipping incremental output."},
 		"yield_time_ms":     map[string]any{"type": "integer", "minimum": 0, "maximum": 300000, "description": "Empty input: 5000-300000ms (default 5000); non-empty input: 250-30000ms (default 250)."},
-		"max_output_tokens": map[string]any{"type": "integer", "minimum": 1, "description": "Output budget; defaults to 10000 tokens."},
+		"max_output_tokens": map[string]any{"type": "integer", "minimum": 1, "description": "Requested output budget; defaults to 10000 tokens, capped at 10000. The result reports requested and effective budgets."},
 	})
 }
 
@@ -183,8 +185,12 @@ func (t writeStdinTool) ExecuteWithProgress(ctx context.Context, args map[string
 	if yield > max {
 		yield = max
 	}
-	snapshot, err := t.processes.Interact(ctx, int64(support.IntArg(args, "session_id", 0)), chars, time.Duration(yield)*time.Millisecond, support.IntArg(args, "max_output_tokens", 10000), processEmit(emit))
+	snapshot, err := t.processes.InteractWithOptions(ctx, int64(support.IntArg(args, "session_id", 0)), chars, time.Duration(yield)*time.Millisecond, observationOptions(args), processEmit(emit))
 	return processResult(snapshot, err)
+}
+
+func observationOptions(args map[string]any) process.ObservationOptions {
+	return process.ObservationOptions{MaxOutputTokens: support.IntArg(args, "max_output_tokens", 10000), IncludeSummary: support.BoolDefault(args, "include_summary", false)}
 }
 
 func processEmit(emit func(any)) func(process.Update) {

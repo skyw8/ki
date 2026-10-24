@@ -165,7 +165,7 @@ func (c *Controller) Views(callerSessionID, prefix string) ([]View, error) {
 }
 
 func ViewSnapshot(s Snapshot) View {
-	return View{Progress: s.Progress, TaskName: s.TaskPath, SessionID: s.SessionID, AgentID: s.TaskID, Generation: s.Generation, Status: s.Status, Description: s.Description, StartedAt: s.StartedAt, FinishedAt: s.FinishedAt, ToolUseCount: s.ToolUseCount, TotalTokens: s.TotalTokens}
+	return View{Progress: s.Progress, TaskName: s.TaskPath, SessionID: s.SessionID, AgentID: s.TaskID, Generation: s.Generation, Status: s.Status, PersistenceError: s.PersistenceError, Description: s.Description, StartedAt: s.StartedAt, FinishedAt: s.FinishedAt, ToolUseCount: s.ToolUseCount, TotalTokens: s.TotalTokens}
 }
 
 func (c *Controller) BlockSubtreeAdmission(sessionID string) (func(), error) {

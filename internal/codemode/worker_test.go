@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -39,6 +40,37 @@ func testManager(t *testing.T, limits Limits) *Manager {
 		}
 	})
 	return m
+}
+
+func TestWorkerCatalogReuseAndRetirement(t *testing.T) {
+	m := testManager(t, Limits{MaxToolCalls: 1})
+	s, err := m.NewSession(context.Background(), "large-directory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := make([]ToolDefinition, 4096)
+	for i := range tools {
+		tools[i] = ToolDefinition{Name: fmt.Sprintf("tool_%d", i)}
+	}
+	for i := 0; i < 2; i++ {
+		resp := executeTest(t, s, `text(ALL_TOOLS.length);text(await tools.tool_4095({}));`, Callbacks{Invoke: func(context.Context, Invocation) (ToolResult, error) { return ToolResult{Details: "result"}, nil }}, tools...)
+		if resp.Status != "completed" || !strings.Contains(textOutput(resp), "4096") || !strings.Contains(textOutput(resp), "result") {
+			t.Fatalf("%+v", resp)
+		}
+	}
+	remote := s.backend.(*remoteSession)
+	if len(remote.catalogs) != 1 {
+		t.Fatalf("registered catalogs=%d", len(remote.catalogs))
+	}
+	if err := s.TerminateAll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(remote.catalogs) != 0 {
+		t.Fatal("old occupy catalog retained")
+	}
+	if resp := executeTest(t, s, `text(typeof tools.tool_4095)`, Callbacks{}, tools...); resp.Status != "completed" {
+		t.Fatalf("%+v", resp)
+	}
 }
 
 func TestWorkerRoundtripAndSessionLifecycle(t *testing.T) {
@@ -171,14 +203,23 @@ func TestTerminationStopsWorkerBeforeCallbackError(t *testing.T) {
 		return result, err
 	})
 	var worker *peer
+	var definitions []ToolDefinition
 	var stoppedCell *cell
 	worker = newPeer(context.Background(), workerRead, workerWrite, limits.MaxFrameBytes, func(ctx context.Context, op string, data json.RawMessage) (any, error) {
 		switch op {
+		case "catalog":
+			var req catalogRequest
+			if err := json.Unmarshal(data, &req); err != nil {
+				return nil, err
+			}
+			definitions = req.Tools
+			return struct{}{}, nil
 		case "execute":
 			var req ExecuteRequest
 			if err := json.Unmarshal(data, &req); err != nil {
 				return nil, err
 			}
+			req.Tools = definitions
 			return local.Execute(worker.ctx, req, Callbacks{Invoke: func(ctx context.Context, inv Invocation) (result ToolResult, err error) {
 				err = worker.call(ctx, "invoke", inv, &result)
 				return
@@ -256,13 +297,22 @@ func TestExecuteCancellationStopsWorkerBeforeCallbackError(t *testing.T) {
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(releaseStop) }) }
 	var worker *peer
+	var definitions []ToolDefinition
 	worker = newPeer(context.Background(), workerRead, workerWrite, limits.MaxFrameBytes, func(ctx context.Context, op string, data json.RawMessage) (any, error) {
 		switch op {
+		case "catalog":
+			var req catalogRequest
+			if err := json.Unmarshal(data, &req); err != nil {
+				return nil, err
+			}
+			definitions = req.Tools
+			return struct{}{}, nil
 		case "execute":
 			var req ExecuteRequest
 			if err := json.Unmarshal(data, &req); err != nil {
 				return nil, err
 			}
+			req.Tools = definitions
 			return local.Execute(worker.ctx, req, Callbacks{Invoke: func(ctx context.Context, inv Invocation) (result ToolResult, err error) {
 				err = worker.call(ctx, "invoke", inv, &result)
 				return

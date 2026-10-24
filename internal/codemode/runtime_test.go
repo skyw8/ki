@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -43,6 +44,22 @@ func textOutput(resp Response) string {
 		}
 	}
 	return out.String()
+}
+
+func TestCatalogAndCallBudgetsAreIndependent(t *testing.T) {
+	s := testSession(t, Limits{MaxToolCalls: 1, MaxCatalogTools: 4096})
+	tools := make([]ToolDefinition, 4096)
+	for i := range tools {
+		tools[i] = ToolDefinition{Name: fmt.Sprintf("tool_%d", i)}
+	}
+	resp := executeTest(t, s, `text(ALL_TOOLS.length); await tools.tool_4095({}); await tools.tool_0({});`, Callbacks{Invoke: func(context.Context, Invocation) (ToolResult, error) { return ToolResult{}, nil }}, tools...)
+	if resp.Status != "failed" || !strings.Contains(resp.Error, "tool call limit") || !strings.Contains(textOutput(resp), "4096") {
+		t.Fatalf("%+v", resp)
+	}
+	tooMany := append(tools, ToolDefinition{Name: "overflow"})
+	if err := validateRequest(ExecuteRequest{ParentCallID: "test", Source: "text(1)", Tools: tooMany}, s.backend.(*localSession).limits); err == nil {
+		t.Fatal("catalog budget bypassed")
+	}
 }
 
 func TestFreshVMAndExplicitStore(t *testing.T) {

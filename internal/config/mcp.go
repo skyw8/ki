@@ -22,6 +22,8 @@ type MCPServer struct {
 	BearerTokenEnv        string            `json:"bearerTokenEnv,omitempty"`
 	Enabled               *bool             `json:"enabled,omitempty"`
 	Required              bool              `json:"required,omitempty"`
+	MaxConcurrent         int               `json:"maxConcurrent,omitempty"`
+	Parallel              *bool             `json:"parallel,omitempty"`
 	StartupTimeoutSeconds int               `json:"startupTimeoutSeconds,omitempty"`
 	ToolTimeoutSeconds    int               `json:"toolTimeoutSeconds,omitempty"`
 	EnabledTools          []string          `json:"enabledTools,omitempty"`
@@ -56,6 +58,13 @@ func (s MCPServer) ToolTimeout() time.Duration {
 	return time.Duration(s.ToolTimeoutSeconds) * time.Second
 }
 
+func (s MCPServer) Concurrency() int {
+	if s.MaxConcurrent == 0 {
+		return 8
+	}
+	return s.MaxConcurrent
+}
+
 func (s MCPServer) AllowsTool(name string) bool {
 	return (s.EnabledTools == nil || slices.Contains(s.EnabledTools, name)) &&
 		!slices.Contains(s.DisabledTools, name)
@@ -81,6 +90,9 @@ func ValidateMCPServers(servers map[string]MCPServer) error {
 		}
 		if s.CWD != "" && !filepath.IsAbs(s.CWD) {
 			return fail("cwd must be a host-absolute path")
+		}
+		if s.MaxConcurrent < 0 {
+			return fail("maxConcurrent must be zero (default) or positive")
 		}
 		maxSeconds := int64(^uint64(0)>>1) / int64(time.Second)
 		if s.StartupTimeoutSeconds < 0 || s.ToolTimeoutSeconds < 0 ||

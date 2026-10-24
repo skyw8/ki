@@ -62,6 +62,33 @@ func find(t *testing.T, tools []tool.Tool, name string) tool.Tool {
 	return tools[i]
 }
 
+func TestDirectoryCacheAndExecutionPolicy(t *testing.T) {
+	server := sdkServer(nil)
+	server.AddTool(&sdk.Tool{Name: "inspect", Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true}, InputSchema: json.RawMessage(`{"type":"object","properties":{"nested":{"type":"object","properties":{"key":{"type":"string"}}}}}`)}, func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{}, nil
+	})
+	disabled, enabled := false, true
+	for _, parallel := range []*bool{nil, &disabled, &enabled} {
+		m, _ := httpManager(t, server, config.MCPServer{MaxConcurrent: 3, Parallel: parallel})
+		first := toolsFor(t, m)
+		cached := m.Discovery(first)
+		next := toolsFor(t, m)
+		if m.Discovery(next) != cached {
+			t.Fatal("unchanged tools rebuilt index")
+		}
+		policy := tool.PolicyFor(first[0])
+		wantExclusive := parallel != nil && !*parallel
+		if policy.Group != "mcp:fixture" || policy.MaxConcurrent != 3 || !policy.ReadOnly || policy.Exclusive != wantExclusive {
+			t.Fatalf("policy=%+v", policy)
+		}
+		parameters := first[0].Parameters()
+		parameters["properties"].(map[string]any)["nested"].(map[string]any)["type"] = "corrupt"
+		if strings.Contains(fmt.Sprint(first[0].Parameters()), "corrupt") {
+			t.Fatal("projection mutated immutable catalog")
+		}
+	}
+}
+
 func TestHTTPPaginationSchemaAndFrozenCatalog(t *testing.T) {
 	var calls atomic.Int32
 	s := sdkServer(&sdk.ServerOptions{PageSize: 1, Instructions: "Use the fixture tools."})
@@ -81,6 +108,7 @@ func TestHTTPPaginationSchemaAndFrozenCatalog(t *testing.T) {
 	if len(tools) != 3 {
 		t.Fatalf("paginated tools=%d", len(tools))
 	}
+	initialIndex := m.Discovery(tools)
 	first := find(t, tools, "mcp__fixture__first")
 	source, description := first.(interface{ SourceInfo() (string, string) }).SourceInfo()
 	if source != "fixture" || description != "Use the fixture tools." {
@@ -119,6 +147,9 @@ func TestHTTPPaginationSchemaAndFrozenCatalog(t *testing.T) {
 			t.Fatal(err)
 		}
 		if find(t, current, "mcp__fixture__first").Description() == "changed" {
+			if m.Discovery(current) == initialIndex || m.Discovery(tools) != initialIndex {
+				t.Fatal("list_changed failed to replace index or mutated occupied index")
+			}
 			break
 		}
 		select {

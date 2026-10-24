@@ -34,6 +34,7 @@ const (
 	MessageStart        EventType = "message_start"
 	MessageUpdate       EventType = "message_update"
 	MessageEnd          EventType = "message_end"
+	ToolCallReady       EventType = "tool_call_ready"
 	ToolExecutionStart  EventType = "tool_execution_start"
 	ToolExecutionUpdate EventType = "tool_execution_update"
 	ToolExecutionEnd    EventType = "tool_execution_end"
@@ -57,7 +58,7 @@ func (t EventType) Lifecycle() bool {
 	switch t {
 	case AgentStart, AgentEnd, TurnStart, TurnEnd,
 		RequestHeader, MessageStart, MessageUpdate, MessageEnd,
-		ToolExecutionStart, ToolExecutionEnd, CompactionStart, CompactionEnd,
+		ToolCallReady, ToolExecutionStart, ToolExecutionEnd, CompactionStart, CompactionEnd,
 		QueueChanged, SteerAccepted, RunAborted,
 		ExtensionNotice, ExtensionUIPrompt, AgentSettled, RuntimeReady,
 		QuestionRequested, QuestionUpdated:
@@ -239,6 +240,9 @@ type Config struct {
 	MaxRetries                int
 	BaseDelay                 time.Duration
 	Parallel                  bool
+	Scheduler                 *ToolScheduler
+	StreamToolExecution       bool
+	streamTools               *streamTools
 	Provider                  string
 	Model                     string
 	API                       string
@@ -271,6 +275,9 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 	if err != nil {
 		return nil, err
 	}
+	if cfg.Scheduler == nil {
+		cfg.Scheduler = NewToolScheduler(32)
+	}
 	if cfg.MaxRetries <= 0 {
 		cfg.MaxRetries = 5
 	}
@@ -279,6 +286,13 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 	}
 	if emit == nil {
 		emit = func(Event) error { return nil }
+	}
+	var emitMu sync.Mutex
+	originalEmit := emit
+	emit = func(ev Event) error {
+		emitMu.Lock()
+		defer emitMu.Unlock()
+		return originalEmit(ev)
 	}
 	newMsgs := []types.Message{}
 	user.Role = "user"
@@ -381,8 +395,18 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 			ResponsesCompactThreshold: cfg.ResponsesCompactThreshold,
 			ContextTransformed:        cfg.Hooks.TransformContext != nil,
 		}
+		var streaming *streamTools
+		if cfg.StreamToolExecution && cfg.Parallel && cfg.Hooks.BeforeTool == nil && cfg.Hooks.AfterTool == nil {
+			streaming = newStreamTools(ctx, cfg, emit)
+		}
+		cfg.streamTools = streaming
 		asst, err := streamWithRetry(ctx, cfg, request, emit)
 		if err != nil {
+			streaming.close()
+			if streaming.started() {
+				_ = emit(Event{Type: AgentEnd, Messages: newMsgs})
+				return newMsgs, err
+			}
 			if request.ResponsesCompactThreshold > 0 &&
 				cfg.ResponsesCompactFallback &&
 				!serverCompactionFallback &&
@@ -444,12 +468,27 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 		var results []types.Message
 		terminate := false
 		if len(calls) > 0 {
+			results = make([]types.Message, len(calls))
+			var remaining []types.Content
+			var indices []int
+			for i, call := range calls {
+				if outcome, started := streaming.result(call); started {
+					results[i] = outcome.message
+				} else {
+					remaining = append(remaining, call)
+					indices = append(indices, i)
+				}
+			}
+			var deferred []types.Message
 			if asst.StopReason == "length" {
-				results = rejectToolCalls(calls, emit)
+				deferred = rejectToolCalls(remaining, emit)
 			} else if asst.StopReason == "aborted" {
-				results = rejectToolCallsWithReason(calls, "the assistant response was interrupted before tool execution; re-issue the call with complete arguments if still needed", emit)
-			} else {
-				results, terminate = executeTools(ctx, cfg, calls, emit)
+				deferred = rejectToolCallsWithReason(remaining, "the assistant response was interrupted before tool execution; re-issue the call with complete arguments if still needed", emit)
+			} else if len(remaining) > 0 {
+				deferred, terminate = executeTools(ctx, cfg, remaining, emit)
+			}
+			for i, result := range deferred {
+				results[indices[i]] = result
 			}
 			for _, r := range results {
 				rr := r
@@ -463,6 +502,7 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 				history = append(history, rr)
 			}
 		}
+		streaming.close()
 		turnEndedAt := time.Now()
 		if err := emit(Event{
 			Type:        TurnEnd,
@@ -629,7 +669,11 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 	var lastErr error
 	for attempt := 0; attempt <= cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
-			d := cfg.BaseDelay * time.Duration(1<<uint(attempt-1))
+			d := cfg.BaseDelay * time.Duration(1<<uint(min(attempt-1, 20)))
+			var advice interface{ RetryAfter() time.Time }
+			if errors.As(lastErr, &advice) && !advice.RetryAfter().IsZero() {
+				d = max(d, time.Until(advice.RetryAfter()))
+			}
 			select {
 			case <-ctx.Done():
 				return last, ctx.Err()
@@ -654,6 +698,11 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 			}
 			m := d.Partial
 			latest = m
+			if cfg.streamTools != nil {
+				if err := cfg.streamTools.observe(d); err != nil {
+					return err
+				}
+			}
 			if err := emit(Event{Type: MessageUpdate, Message: &m, AssistantMessageEvent: &d}); err != nil {
 				return err
 			}
@@ -706,14 +755,14 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 				asst.Role = "assistant"
 				asst.StopReason = "aborted"
 				asst.ErrorMessage = ctx.Err().Error()
-				if emitErr := emitFailedAssistant(asst, emit); emitErr != nil {
+				if emitErr := streamFailedAssistant(cfg.streamTools, asst, emit); emitErr != nil {
 					return asst, errors.Join(err, emitErr)
 				}
 				return asst, fmt.Errorf("stream assistant response: %w", err)
 			}
 			if asst.StopReason == "error" && IsContextOverflow(asst) {
 				last = asst
-				if emitErr := emitFailedAssistant(asst, emit); emitErr != nil {
+				if emitErr := streamFailedAssistant(cfg.streamTools, asst, emit); emitErr != nil {
 					return last, errors.Join(ErrContextOverflow, emitErr)
 				}
 				return last, ErrContextOverflow
@@ -738,10 +787,20 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 				if asst.Model == "" {
 					asst.Model = cfg.Model
 				}
-				if emitErr := emitFailedAssistant(asst, emit); emitErr != nil {
+				if emitErr := streamFailedAssistant(cfg.streamTools, asst, emit); emitErr != nil {
 					return asst, errors.Join(err, emitErr)
 				}
 				return asst, fmt.Errorf("stream assistant response: %w", err)
+			}
+			if cfg.streamTools != nil && cfg.streamTools.started() {
+				if len(asst.Content) == 0 {
+					asst = latest
+				}
+				asst.Role, asst.StopReason, asst.IsError, asst.ErrorMessage = "assistant", "error", true, err.Error()
+				if emitErr := streamFailedAssistant(cfg.streamTools, asst, emit); emitErr != nil {
+					return asst, errors.Join(err, emitErr)
+				}
+				return asst, err
 			}
 			continue
 		}
@@ -786,7 +845,7 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 		}
 		var endErr error
 		if asst.StopReason == "error" {
-			endErr = emitFailedAssistant(asst, emit)
+			endErr = streamFailedAssistant(cfg.streamTools, asst, emit)
 		} else {
 			endErr = emit(Event{Type: MessageEnd, Message: &asst})
 		}
@@ -806,6 +865,9 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 			lastErr = fmt.Errorf("%w: %s", errAssistant, asst.ErrorMessage)
 			if IsContextOverflow(asst) {
 				return last, ErrContextOverflow
+			}
+			if cfg.streamTools != nil && cfg.streamTools.started() {
+				return last, lastErr
 			}
 			continue
 		}

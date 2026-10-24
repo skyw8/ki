@@ -285,7 +285,7 @@ func (l *Client) postStream(ctx context.Context, url string, body any, hdr http.
 		if !retryableProviderResponse(res.StatusCode, b) {
 			return out, &nonRetryableError{err: err}
 		}
-		return out, err
+		return out, withRetryAdvice(err, res.Header)
 	}
 	acc := Message{Role: "assistant"}
 	sc := bufio.NewScanner(idleReader{ReadCloser: res.Body, timeout: l.IdleTimeout})

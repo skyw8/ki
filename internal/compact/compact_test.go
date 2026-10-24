@@ -158,8 +158,8 @@ func TestEstimatePortableContextIgnoresCheckpointScopedUsage(t *testing.T) {
 			{Role: "assistant", Timestamp: 200, Usage: &types.Usage{TotalTokens: 1}},
 		},
 	}
-	if got := EstimateModelContext(ctx, 100); got <= 100 {
-		t.Fatalf("portable estimate = %d, want expanded serialized estimate", got)
+	if got := EstimateModelContext(ctx, 100); got != 100 {
+		t.Fatalf("portable estimate = %d, want model-visible estimate 100 without stale usage", got)
 	}
 }
 

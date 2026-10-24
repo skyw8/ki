@@ -576,6 +576,12 @@ func (s *Server) reloadProviderExtensions() {
 }
 
 func (s *Server) reloadSession(id string) {
+	s.mu.Lock()
+	manager := s.processes[id]
+	s.mu.Unlock()
+	if manager != nil {
+		manager.InvalidateShellSnapshots()
+	}
 	s.resources.Invalidate(id)
 	if s.ext != nil {
 		s.ext.CloseSession(id)
@@ -2520,6 +2526,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	tls = builtin.FilterBuiltins(tls, tg.Tools)
 	enabledExtensions := extension.Enabled(snapshot.Extensions, tg.Extensions)
 	var mcpTools []toolapi.Tool
+	var mcpDiscovery func([]toolapi.Tool) *discovery.Catalog
 	var mcpErr error
 	if !sideConversation {
 		s.ext.Configure(enabledExtensions)
@@ -2537,6 +2544,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		}
 		defer releaseMCP()
 		if mcpManager != nil {
+			mcpDiscovery = mcpManager.Discovery
 			mcpTools, mcpErr = mcpManager.Tools(ctx)
 			if errors.Is(mcpErr, mcpruntime.ErrRequired) {
 				st.err = fmt.Errorf("prepare required MCP server: %w", mcpErr)
@@ -2568,7 +2576,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	var searchCatalog *discovery.Catalog
 	var searchTools []toolapi.Tool
 	if len(deferredMCP) > 0 {
-		candidate := discovery.New(deferredMCP)
+		candidate := mcpDiscovery(deferredMCP)
 		searchTools = s.filterActiveTools(id, builtin.FilterBuiltins([]toolapi.Tool{candidate.SearchTool()}, tg.Tools))
 		if len(searchTools) > 0 {
 			searchCatalog = candidate
@@ -2623,7 +2631,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 			return codeDispatcher.NotifyNested(notification.ParentCallID, notification.CellID, notification.Text)
 		},
 	}
-	codeSet := codetools.Set{GetSession: getCodeSession, Callbacks: callbacks, Nested: nestedTools, Deferred: deferredNames, Freeform: info.SupportsFreeformExec()}
+	codeSet := codetools.Set{GetSession: getCodeSession, Callbacks: callbacks, Catalog: codetools.Prepare(nestedTools), Deferred: deferredNames, Freeform: info.SupportsFreeformExec()}
 	codeTools := codeSet.Build()
 	if sideConversation {
 		codeTools = nil
@@ -2631,6 +2639,8 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	codeTools = builtin.FilterBuiltins(codeTools, tg.Tools)
 	executionTools = append(executionTools, codeTools...)
 	executionTools = append(executionTools, searchTools...)
+	var cachedModelTools []toolapi.Tool
+	var cachedDeferredKey string
 	modelTools := func(history []types.Message) []toolapi.Tool {
 		remaining := make(map[string]bool, len(deferredNames))
 		for name := range deferredNames {
@@ -2640,6 +2650,16 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 			for _, t := range searchCatalog.Loaded(history) {
 				delete(remaining, toolapi.MustCanonical(t.Name()))
 			}
+		}
+		var key strings.Builder
+		for _, t := range nestedTools {
+			if remaining[toolapi.MustCanonical(t.Name())] {
+				key.WriteString(toolapi.MustCanonical(t.Name()))
+				key.WriteByte(0)
+			}
+		}
+		if cachedModelTools != nil && cachedDeferredKey == key.String() {
+			return slices.Clone(cachedModelTools)
 		}
 		var visible []toolapi.Tool
 		for _, t := range nestedTools {
@@ -2653,7 +2673,9 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		if sideConversation {
 			visible = restrictQuestionSideTools(sess, visible)
 		}
-		return append(visible, searchTools...)
+		cachedModelTools = append(visible, searchTools...)
+		cachedDeferredKey = key.String()
+		return slices.Clone(cachedModelTools)
 	}
 	tls = modelTools(nil)
 	var occ *extension.Occupy
@@ -2732,6 +2754,10 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	if len(nextTurn) > 0 {
 		hooks = s.withNextTurn(sess, st, hooks, nextTurn)
 	}
+	streamToolExecution := occ.AllowsStreamToolExecution() && !useServerCompaction
+	if streamToolExecution {
+		hooks.BeforeTool, hooks.AfterTool = nil, nil
+	}
 	runCfg := loop.Config{
 		Streamer:                runStreamer,
 		RunID:                   st.runID,
@@ -2758,6 +2784,8 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		MaxRetries:              5,
 		BaseDelay:               2 * time.Second,
 		Parallel:                true,
+		Scheduler:               loop.NewToolScheduler(32),
+		StreamToolExecution:     streamToolExecution,
 		Inbox:                   st.inbox,
 		CommitUserMessage:       s.commitUserMessage,
 		Hooks:                   hooks,

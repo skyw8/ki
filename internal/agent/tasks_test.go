@@ -862,6 +862,102 @@ func TestAgentMetadataMigrationKeepsConsumptionNotEnqueue(t *testing.T) {
 	}
 }
 
+func TestCancellationIntentBlocksPersistedPendingAfterMetadataFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.json")
+	meta := Metadata{Version: agentMetadataVersion, TaskID: "child", SessionID: "child-session", RootSessionID: "root", TaskPath: "/root/child", RunCount: 1, Status: Pending, Pending: []Input{{Prompt: "must not run", ClientRequestID: "old"}}}
+	if err := state.WriteVersioned(path, agentMetadataVersion, meta, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	controller := NewController()
+	if _, err := controller.LoadMetadata(path, func(context.Context, string, string) (Completion, error) {
+		t.Error("cancelled pending ran")
+		return Completion{}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("metadata disk failure")
+	task := controller.tasks["child"]
+	task.persist = func(target string, version int, value any, perm os.FileMode) error {
+		if target == path {
+			return failure
+		}
+		return state.WriteVersioned(target, version, value, perm)
+	}
+	if _, err := controller.StopSubtree("child-session"); !errors.Is(err, failure) {
+		t.Fatalf("cancel persistence error: %v", err)
+	}
+	if snapshot, _ := controller.Get("child"); snapshot.PersistenceError == "" || snapshot.PendingTasks != 0 {
+		t.Fatalf("failure projection: %+v", snapshot)
+	}
+	restored, err := ReadMetadata(path)
+	if err != nil || len(restored.Pending) != 0 || restored.Status != Killed || restored.CancellationSequence != 1 {
+		t.Fatalf("cancellation recovery: %+v %v", restored, err)
+	}
+	restarted := NewController()
+	defer restarted.Close()
+	if _, err := restarted.LoadMetadata(path, func(context.Context, string, string) (Completion, error) {
+		t.Error("cancelled pending restored")
+		return Completion{}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if started, err := restarted.ResumePending("child"); err != nil || started {
+		t.Fatalf("cancelled pending resumed: %t %v", started, err)
+	}
+	controller.Close()
+}
+
+func TestCancellationFailureBlocksAutomaticRestartAndRetriesIntent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.json")
+	meta := Metadata{Version: agentMetadataVersion, TaskID: "child", SessionID: "child-session", RootSessionID: "root", TaskPath: "/root/child", RunCount: 1, Status: Pending, Pending: []Input{{Prompt: "old", ClientRequestID: "old"}}}
+	if err := state.WriteVersioned(path, agentMetadataVersion, meta, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	controller := NewController()
+	defer controller.Close()
+	if _, err := controller.LoadMetadata(path, func(context.Context, string, string) (Completion, error) {
+		t.Error("unsafe pending ran")
+		return Completion{}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("all writes fail")
+	task := controller.tasks["child"]
+	task.persist = func(string, int, any, os.FileMode) error { return failure }
+	if _, err := controller.StopSubtree("child-session"); !errors.Is(err, failure) {
+		t.Fatalf("cancel error: %v", err)
+	}
+	task.persist = state.WriteVersioned
+	if _, err := controller.QueueOrResume(t.Context(), "child", "new"); err == nil {
+		t.Fatal("undurable cancellation accepted work")
+	}
+	if _, err := controller.StopSubtree("child-session"); err != nil {
+		t.Fatalf("retry cancellation: %v", err)
+	}
+	restored, err := ReadMetadata(path)
+	if err != nil || len(restored.Pending) != 0 {
+		t.Fatalf("retry retained old pending: %+v %v", restored, err)
+	}
+}
+
+func TestControllerReportsCompletionClaimAndClosePersistenceFailures(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.json")
+	controller := NewController()
+	failure := errors.New("write failed")
+	task := &agentTask{metadataPath: path, snap: Snapshot{TaskID: "child", Status: Running}, done: make(chan struct{}), result: new(Snapshot), persist: func(string, int, any, os.FileMode) error { return failure }}
+	controller.tasks["child"] = task
+	identity := types.CompletionIdentity{TaskID: "child", Generation: 1}
+	if accepted, err := controller.CommitNotification(identity, func() error { return nil }); !accepted || !errors.Is(err, failure) {
+		t.Fatalf("claim error: %t %v", accepted, err)
+	}
+	if err := controller.CloseContext(t.Context()); !errors.Is(err, failure) {
+		t.Fatalf("close error: %v", err)
+	}
+	if err := controller.CloseContext(t.Context()); !errors.Is(err, failure) {
+		t.Fatalf("shared close error: %v", err)
+	}
+}
+
 func (f fakeAgentRuntime) SendAgentMessage(context.Context, MessageRequest) (MessageResult, error) {
 	return MessageResult{}, nil
 }

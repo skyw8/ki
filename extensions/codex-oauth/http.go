@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ki/pkg/codexclient"
+	"ki/pkg/llmprotocol"
 )
 
 const clientID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -72,11 +73,13 @@ func codexRequest(ctx context.Context, payload, body object, compaction bool) (*
 }
 
 type httpFailure struct {
-	status  int
-	message string
+	status     int
+	message    string
+	retryAfter time.Time
 }
 
-func (e *httpFailure) Error() string { return e.message }
+func (e *httpFailure) Error() string         { return e.message }
+func (e *httpFailure) RetryAfter() time.Time { return e.retryAfter }
 func (e *httpFailure) NonRetryable() bool {
 	switch e.status {
 	case 400, 401, 403, 404, 405, 410, 413, 415, 422:
@@ -109,7 +112,7 @@ func upstreamFailure(response *http.Response) error {
 	if detail != "" {
 		message += ": " + detail
 	}
-	return &httpFailure{response.StatusCode, safeError(errors.New(message))}
+	return &httpFailure{status: response.StatusCode, message: safeError(errors.New(message)), retryAfter: llmprotocol.ParseRetryAfter(response.Header.Get("Retry-After"), time.Now())}
 }
 func safeError(err error) string {
 	s := strings.TrimSpace(err.Error())

@@ -229,8 +229,9 @@ func TestCodeModeServerSchemaExposure(t *testing.T) {
 			if !slices.Contains(names, "read") || !strings.Contains(got.System, "code-fixture") {
 				t.Fatalf("direct read or skill disappeared: %v / %s", names, got.System)
 			}
-			if !strings.Contains(exec.Description, "tools.read") || !strings.Contains(exec.Description, "file_path") {
-				t.Fatal("exec description omitted nested tool signatures")
+			read, ok := mcpRequestSpec(got, "read")
+			if !strings.Contains(exec.Description, "tools.read") || !ok || !strings.Contains(codeModeJSON(t, read.Parameters), "file_path") || strings.Contains(exec.Description, "Input JSON schema:") {
+				t.Fatal("nested reference or direct schema missing, or schema duplicated")
 			}
 			if tc.nativeExec {
 				if exec.Type != "custom" || exec.Format == nil || exec.Format.Syntax != "lark" {

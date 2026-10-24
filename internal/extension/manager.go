@@ -500,6 +500,18 @@ func (o *Occupy) Hooks() loop.Hooks {
 	return composeHooks(o.items, o.skipped, o.onErr)
 }
 
+func (o *Occupy) AllowsStreamToolExecution() bool {
+	if o == nil {
+		return true
+	}
+	for _, item := range o.items {
+		if item.hasSync(EventMessageEnd) || item.hasSync(EventToolCall) || item.hasSync(EventToolResult) || item.hasSync(EventAfterProviderResponse) {
+			return false
+		}
+	}
+	return true
+}
+
 func (o *Occupy) WrapStreamer(inner loop.Streamer) loop.Streamer {
 	if o == nil {
 		return inner

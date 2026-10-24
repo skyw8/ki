@@ -2,6 +2,8 @@ package codemode
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -111,6 +113,8 @@ type remoteSession struct {
 	stopping        bool
 	callbacksClosed bool
 	callbackWG      sync.WaitGroup
+	catalogMu       sync.Mutex
+	catalogs        map[string]bool
 }
 
 func (s *remoteSession) start(ctx context.Context) (*peer, error) {
@@ -206,12 +210,43 @@ func safeWorkerEnv() []string {
 	return result
 }
 
+func (s *remoteSession) registerCatalog(ctx context.Context, p *peer, req *ExecuteRequest) error {
+	raw, err := json.Marshal(req.Tools)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(raw)
+	id := hex.EncodeToString(digest[:])
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
+	s.mu.Lock()
+	stopping := s.stopping || s.callbacksClosed || s.closed
+	s.mu.Unlock()
+	if stopping {
+		return errors.New("code mode session is closing")
+	}
+	if !s.catalogs[id] {
+		if err := p.call(ctx, "catalog", catalogRequest{ID: id, Tools: req.Tools}, nil); err != nil {
+			return err
+		}
+		if s.catalogs == nil {
+			s.catalogs = make(map[string]bool)
+		}
+		s.catalogs[id] = true
+	}
+	req.CatalogID = id
+	return nil
+}
+
 func (s *remoteSession) execute(ctx context.Context, req ExecuteRequest, cb Callbacks) (Response, error) {
 	if err := validateRequest(req, s.config.Limits); err != nil {
 		return Response{}, err
 	}
 	p, err := s.start(ctx)
 	if err != nil {
+		return Response{}, err
+	}
+	if err := s.registerCatalog(ctx, p, &req); err != nil {
 		return Response{}, err
 	}
 	bindingCtx, bindingCancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -234,7 +269,9 @@ func (s *remoteSession) execute(ctx context.Context, req ExecuteRequest, cb Call
 	s.bindings[req.ParentCallID] = b
 	s.mu.Unlock()
 	var resp Response
-	err = p.call(ctx, "execute", req, &resp)
+	wireRequest := req
+	wireRequest.Tools = nil
+	err = p.call(ctx, "execute", wireRequest, &resp)
 	if err != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), s.config.Limits.DrainTimeout+time.Second)
 		_ = s.terminateAll(cleanupCtx)
@@ -434,6 +471,9 @@ func (s *remoteSession) terminateAll(ctx context.Context) error {
 	p.cancelInbound()
 	_ = p.drain(context.Background())
 	s.callbackWG.Wait()
+	s.catalogMu.Lock()
+	s.catalogs = nil
+	s.catalogMu.Unlock()
 	s.mu.Lock()
 	for parent := range s.bindings {
 		s.removeBindingLocked(parent)

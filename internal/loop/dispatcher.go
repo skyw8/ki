@@ -43,6 +43,9 @@ func NewToolDispatcher(cfg Config, emit func(Event) error) (*ToolDispatcher, err
 	if emit == nil {
 		emit = func(Event) error { return nil }
 	}
+	if cfg.Scheduler == nil {
+		cfg.Scheduler = NewToolScheduler(32)
+	}
 	return &ToolDispatcher{cfg: cfg, registry: registry, emit: emit}, nil
 }
 
@@ -151,6 +154,16 @@ func (d *ToolDispatcher) execute(ctx context.Context, p preparedTool, origin nes
 	if p.tool != nil {
 		canonical = toolapi.MustCanonical(p.tool.Name())
 	}
+	var queueWait time.Duration
+	if p.immediate == nil && p.tool != nil {
+		release, waited, err := d.cfg.Scheduler.acquire(ctx, toolapi.PolicyFor(p.tool))
+		queueWait = waited
+		if err != nil {
+			p.immediate = rejectedTool(err.Error(), "cancelled", "cancelled", "cancellation")
+		} else {
+			defer release()
+		}
+	}
 	startedAt := time.Now()
 	event := func(typ EventType) Event {
 		return Event{
@@ -222,7 +235,7 @@ func (d *ToolDispatcher) execute(ctx context.Context, p preparedTool, origin nes
 	}
 	finishedAt := time.Now()
 	dur := finishedAt.Sub(startedAt).Milliseconds()
-	d.recordTelemetry(canonical, p, published, dur, origin)
+	d.recordTelemetry(canonical, p, published, dur, queueWait, origin)
 	end := event(ToolExecutionEnd)
 	end.Timestamp, end.DurationMs, end.IsError = finishedAt.UnixMilli(), dur, published.IsError
 	if p.immediate == nil || nested {
@@ -256,7 +269,7 @@ func executePreparedTool(ctx context.Context, p preparedTool, progressEmit func(
 	return p.tool.Execute(ctx, p.args)
 }
 
-func (d *ToolDispatcher) recordTelemetry(canonical string, p preparedTool, res toolapi.Result, dur int64, origin nestedOrigin) {
+func (d *ToolDispatcher) recordTelemetry(canonical string, p preparedTool, res toolapi.Result, dur int64, queueWait time.Duration, origin nestedOrigin) {
 	if d.cfg.Telemetry == nil {
 		return
 	}
@@ -266,6 +279,7 @@ func (d *ToolDispatcher) recordTelemetry(canonical string, p preparedTool, res t
 	}
 	attrs["ki.agent.id"], attrs["ki.agent.generation"] = d.cfg.AgentID, d.cfg.Generation
 	attrs["ki.tool.requested_name"] = p.call.Name
+	attrs["ki.tool.queue_wait_ms"] = float64(queueWait.Microseconds()) / 1000
 	if origin.nested() {
 		attrs["ki.tool.parent_call_id"], attrs["ki.code.cell_id"] = origin.parentCallID, origin.cellID
 	}

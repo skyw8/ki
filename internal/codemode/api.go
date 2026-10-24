@@ -23,6 +23,7 @@ type Limits struct {
 	MaxCells            int           `json:"maxCells"`
 	MaxConcurrentCells  int           `json:"maxConcurrentCells"`
 	MaxToolCalls        int           `json:"maxToolCalls"`
+	MaxCatalogTools     int           `json:"maxCatalogTools"`
 	MaxPendingToolCalls int           `json:"maxPendingToolCalls"`
 	MaxTimers           int           `json:"maxTimers"`
 	MaxStackDepth       int           `json:"maxStackDepth"`
@@ -38,7 +39,7 @@ func DefaultLimits() Limits {
 		MaxSourceBytes: 256 << 10, MaxFrameBytes: 16 << 20,
 		MaxResultBytes: 8 << 20, MaxOutputBytes: 8 << 20,
 		MaxStoreBytes: 4 << 20, MaxStoreKeys: 1024,
-		MaxCells: 64, MaxConcurrentCells: 8, MaxToolCalls: 512,
+		MaxCells: 64, MaxConcurrentCells: 8, MaxToolCalls: 512, MaxCatalogTools: 16384,
 		MaxPendingToolCalls: 32, MaxTimers: 128, MaxStackDepth: 1024,
 		MaxExecutionTime: 5 * time.Minute, DrainTimeout: 2 * time.Second,
 		DefaultYieldTime: 10 * time.Second, MaxYieldTime: 60 * time.Second,
@@ -48,8 +49,8 @@ func DefaultLimits() Limits {
 
 func (l Limits) normalized() Limits {
 	d := DefaultLimits()
-	dst := []*int{&l.MaxSourceBytes, &l.MaxFrameBytes, &l.MaxResultBytes, &l.MaxOutputBytes, &l.MaxStoreBytes, &l.MaxStoreKeys, &l.MaxCells, &l.MaxConcurrentCells, &l.MaxToolCalls, &l.MaxPendingToolCalls, &l.MaxTimers, &l.MaxStackDepth, &l.DefaultOutputBytes}
-	src := []int{d.MaxSourceBytes, d.MaxFrameBytes, d.MaxResultBytes, d.MaxOutputBytes, d.MaxStoreBytes, d.MaxStoreKeys, d.MaxCells, d.MaxConcurrentCells, d.MaxToolCalls, d.MaxPendingToolCalls, d.MaxTimers, d.MaxStackDepth, d.DefaultOutputBytes}
+	dst := []*int{&l.MaxSourceBytes, &l.MaxFrameBytes, &l.MaxResultBytes, &l.MaxOutputBytes, &l.MaxStoreBytes, &l.MaxStoreKeys, &l.MaxCells, &l.MaxConcurrentCells, &l.MaxToolCalls, &l.MaxCatalogTools, &l.MaxPendingToolCalls, &l.MaxTimers, &l.MaxStackDepth, &l.DefaultOutputBytes}
+	src := []int{d.MaxSourceBytes, d.MaxFrameBytes, d.MaxResultBytes, d.MaxOutputBytes, d.MaxStoreBytes, d.MaxStoreKeys, d.MaxCells, d.MaxConcurrentCells, d.MaxToolCalls, d.MaxCatalogTools, d.MaxPendingToolCalls, d.MaxTimers, d.MaxStackDepth, d.DefaultOutputBytes}
 	for i := range dst {
 		if *dst[i] <= 0 {
 			*dst[i] = src[i]
@@ -107,10 +108,16 @@ type Callbacks struct {
 	Notify func(context.Context, Notification) error
 }
 
+type catalogRequest struct {
+	ID    string           `json:"id"`
+	Tools []ToolDefinition `json:"tools"`
+}
+
 type ExecuteRequest struct {
 	ParentCallID      string           `json:"parentCallId"`
 	Source            string           `json:"source"`
-	Tools             []ToolDefinition `json:"tools"`
+	Tools             []ToolDefinition `json:"tools,omitempty"`
+	CatalogID         string           `json:"catalogId,omitempty"`
 	YieldTime         time.Duration    `json:"yieldTime"`
 	YieldTimeSet      bool             `json:"yieldTimeSet,omitempty"`
 	MaxOutputBytes    int              `json:"maxOutputBytes,omitempty"`
@@ -178,7 +185,7 @@ func validateRequest(req ExecuteRequest, l Limits) error {
 	if strings.TrimSpace(req.Source) == "" || len(req.Source) > l.MaxSourceBytes {
 		return errors.New("code source is empty or exceeds the source limit")
 	}
-	if len(req.Tools) > l.MaxToolCalls {
+	if len(req.Tools) > l.MaxCatalogTools {
 		return errors.New("tool catalog exceeds limit")
 	}
 	names := make(map[string]bool)

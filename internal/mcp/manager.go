@@ -19,6 +19,7 @@ import (
 	"ki/internal/config"
 	"ki/internal/process"
 	"ki/internal/tool"
+	"ki/internal/tool/discovery"
 )
 
 var ErrRequired = errors.New("required MCP server unavailable")
@@ -39,6 +40,7 @@ type Manager struct {
 	monitorWG       sync.WaitGroup
 	closeOnce       sync.Once
 	closeErr        error
+	discovery       discovery.Cache
 }
 
 type serverEntry struct {
@@ -69,6 +71,10 @@ func NewManager(servers map[string]config.MCPServer) *Manager {
 		cfg.HTTPHeaders = maps.Clone(cfg.HTTPHeaders)
 		cfg.EnabledTools = slices.Clone(cfg.EnabledTools)
 		cfg.DisabledTools = slices.Clone(cfg.DisabledTools)
+		if cfg.Parallel != nil {
+			parallel := *cfg.Parallel
+			cfg.Parallel = &parallel
+		}
 		if cfg.Enabled != nil {
 			enabled := *cfg.Enabled
 			cfg.Enabled = &enabled
@@ -142,6 +148,10 @@ func (m *Manager) Tools(ctx context.Context) ([]tool.Tool, error) {
 	}
 	m.mu.Unlock()
 	return out, errors.Join(failures...)
+}
+
+func (m *Manager) Discovery(tools []tool.Tool) *discovery.Catalog {
+	return m.discovery.Get(tools)
 }
 
 func (m *Manager) Catalog() []tool.Tool {
@@ -226,6 +236,12 @@ func (m *Manager) load(ctx context.Context, e *serverEntry) ([]*adapter, error) 
 		if err != nil {
 			return nil, fmt.Errorf("tool %q: %w", remote.Name, err)
 		}
+		t.readOnly = remote.Annotations != nil && remote.Annotations.ReadOnlyHint
+		t.parallel = t.readOnly
+		if e.cfg.Parallel != nil {
+			t.parallel = *e.cfg.Parallel
+		}
+		t.maxConcurrent = e.cfg.Concurrency()
 		totalBytes += t.schemaBytes + len(t.description)
 		if totalBytes > 16*1024*1024 {
 			return nil, errors.New("MCP catalog exceeds 16MiB")

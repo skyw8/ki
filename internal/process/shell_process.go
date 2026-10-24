@@ -21,27 +21,34 @@ import (
 const processBufferBytes = 1 << 20
 
 type Snapshot struct {
-	Revision       uint64     `json:"revision"`
-	RunID          string     `json:"run_id,omitempty"`
-	CallID         string     `json:"tool_call_id,omitempty"`
-	AgentID        string     `json:"agent_id,omitempty"`
-	Generation     uint64     `json:"generation,omitempty"`
-	SessionID      int64      `json:"session_id"`
-	OwnerSessionID string     `json:"owner_session_id,omitempty"`
-	Command        string     `json:"cmd,omitempty"`
-	CWD            string     `json:"workdir,omitempty"`
-	TTY            bool       `json:"tty"`
-	Status         string     `json:"status"`
-	PID            int        `json:"pid,omitempty"`
-	Output         string     `json:"output,omitempty"`
-	OutputFile     string     `json:"output_file,omitempty"`
-	ExitCode       *int       `json:"exit_code,omitempty"`
-	Error          string     `json:"error,omitempty"`
-	Truncated      bool       `json:"truncated,omitempty"`
-	OutputOffset   int64      `json:"output_offset"`
-	TotalBytes     int64      `json:"total_bytes"`
-	StartedAt      time.Time  `json:"started_at"`
-	FinishedAt     *time.Time `json:"finished_at,omitempty"`
+	Revision              uint64     `json:"revision"`
+	RunID                 string     `json:"run_id,omitempty"`
+	CallID                string     `json:"tool_call_id,omitempty"`
+	AgentID               string     `json:"agent_id,omitempty"`
+	Generation            uint64     `json:"generation,omitempty"`
+	SessionID             int64      `json:"session_id"`
+	OwnerSessionID        string     `json:"owner_session_id,omitempty"`
+	Command               string     `json:"cmd,omitempty"`
+	CWD                   string     `json:"workdir,omitempty"`
+	TTY                   bool       `json:"tty"`
+	Status                string     `json:"status"`
+	PID                   int        `json:"pid,omitempty"`
+	Output                string     `json:"output,omitempty"`
+	OutputFile            string     `json:"output_file,omitempty"`
+	ExitCode              *int       `json:"exit_code,omitempty"`
+	Error                 string     `json:"error,omitempty"`
+	Truncated             bool       `json:"truncated,omitempty"`
+	OutputFileBytes       int64      `json:"output_file_bytes"`
+	OutputFileIncomplete  bool       `json:"output_file_incomplete,omitempty"`
+	RequestedOutputTokens int        `json:"requested_output_tokens,omitempty"`
+	EffectiveOutputTokens int        `json:"effective_output_tokens,omitempty"`
+	OutputSummary         string     `json:"output_summary,omitempty"`
+	SummaryBytes          int        `json:"summary_bytes,omitempty"`
+	SummaryOmittedBytes   int64      `json:"summary_omitted_bytes,omitempty"`
+	OutputOffset          int64      `json:"output_offset"`
+	TotalBytes            int64      `json:"total_bytes"`
+	StartedAt             time.Time  `json:"started_at"`
+	FinishedAt            *time.Time `json:"finished_at,omitempty"`
 }
 
 type Update struct {
@@ -58,6 +65,7 @@ type Manager struct {
 	owner     string
 	limit     int
 	listener  func(Update)
+	snapshots shellSnapshotCache
 }
 
 type shellProcess struct {
@@ -70,7 +78,7 @@ type shellProcess struct {
 	total         int64
 	cursor        int64
 	sanitizer     outputSanitizer
-	file          *os.File
+	file          OutputFile
 	outputErr     error
 	cmd           *exec.Cmd
 	terminal      pty.Pty
@@ -83,6 +91,8 @@ type shellProcess struct {
 	temporary     bool
 	lastPublished time.Time
 	pending       outputRing
+	head          []byte
+	summaryTail   outputRing
 }
 
 func NewManager() *Manager { return NewSpooledManager(nil, "") }
@@ -116,6 +126,7 @@ func (m *Manager) Start(ctx context.Context, shell Shell, cwd, command string, t
 	if !shell.available() {
 		return 0, errInterpreterUnavailable
 	}
+	shell = m.prepareShellSnapshot(ctx, shell, cwd)
 	m.mu.Lock()
 	if err := ctx.Err(); err != nil {
 		m.mu.Unlock()
@@ -173,8 +184,14 @@ func (m *Manager) Start(ctx context.Context, shell Shell, cwd, command string, t
 			return 0, err
 		}
 	}
-	var f *os.File
-	if m.spool != nil {
+	var f OutputFile
+	if budgeted, ok := m.spool.(BudgetedOutputSpool); ok {
+		f, err = budgeted.CreateProcessOutputFile(m.owner, "exec_command")
+		if err != nil {
+			m.mu.Unlock()
+			return 0, err
+		}
+	} else if m.spool != nil {
 		f, err = m.spool.CreateOutputFile(m.owner, "exec_command")
 	} else {
 		f, err = os.CreateTemp("", "ki-process-*.log")
@@ -297,9 +314,11 @@ func (p *shellProcess) Write(data []byte) (int, error) {
 		if err == nil && n != len(data) {
 			err = io.ErrShortWrite
 		}
+		p.snapshot.OutputFileBytes += int64(n)
 		p.outputErr = err
 		if err != nil {
 			p.snapshot.Error = err.Error()
+			p.snapshot.OutputFileIncomplete = true
 		}
 	}
 	p.appendOutputLocked(p.sanitizer.Filter(data))
@@ -321,6 +340,10 @@ func (p *shellProcess) Write(data []byte) (int, error) {
 func (p *shellProcess) appendOutputLocked(clean []byte) {
 	p.snapshot.Revision++
 	p.total += int64(len(clean))
+	if len(p.head) < 20000 {
+		p.head = append(p.head, clean[:min(len(clean), 20000-len(p.head))]...)
+	}
+	p.summaryTail.append(clean, 20000)
 	p.dropped += int64(p.buffer.append(clean, processBufferBytes))
 	p.snapshot.TotalBytes = p.total
 	offset := max(0, p.buffer.size-16384)
@@ -348,6 +371,9 @@ func (p *shellProcess) finish(code int, err error) {
 	if failure := errors.Join(err, outputErr); failure != nil {
 		p.snapshot.Error = failure.Error()
 	}
+	if outputErr != nil {
+		p.snapshot.OutputFileIncomplete = true
+	}
 	p.signalLocked()
 	snapshot := p.snapshot
 	delta := string(p.pending.bytes(0, 0))
@@ -371,6 +397,15 @@ func (m *Manager) get(id int64) (*shellProcess, error) {
 }
 
 func (m *Manager) Interact(ctx context.Context, id int64, chars string, yield time.Duration, budget int, emit func(Update)) (Snapshot, error) {
+	return m.InteractWithOptions(ctx, id, chars, yield, ObservationOptions{MaxOutputTokens: budget}, emit)
+}
+
+type ObservationOptions struct {
+	MaxOutputTokens int
+	IncludeSummary  bool
+}
+
+func (m *Manager) InteractWithOptions(ctx context.Context, id int64, chars string, yield time.Duration, options ObservationOptions, emit func(Update)) (Snapshot, error) {
 	p, err := m.get(id)
 	if err != nil {
 		return Snapshot{}, err
@@ -398,7 +433,7 @@ func (m *Manager) Interact(ctx context.Context, id int64, chars string, yield ti
 		terminal := p.terminal
 		p.mu.Unlock()
 		if !live {
-			return p.observe(budget), fmt.Errorf("terminal has already exited")
+			return p.observeWithOptions(options), fmt.Errorf("terminal has already exited")
 		}
 		if terminal != nil {
 			written := make(chan error, 1)
@@ -406,19 +441,19 @@ func (m *Manager) Interact(ctx context.Context, id int64, chars string, yield ti
 			select {
 			case err = <-written:
 				if err != nil {
-					return p.observe(budget), err
+					return p.observeWithOptions(options), err
 				}
 			case <-ctx.Done():
 				releaseInteraction = false
 				go func() { <-written; <-p.interaction }()
-				return p.observe(budget), ctx.Err()
+				return p.observeWithOptions(options), ctx.Err()
 			}
 		} else if chars == "\x03" {
 			if err = interruptProcess(p.cmd); err != nil {
-				return p.observe(budget), err
+				return p.observeWithOptions(options), err
 			}
 		} else {
-			return p.observe(budget), fmt.Errorf("stdin requires tty=true")
+			return p.observeWithOptions(options), fmt.Errorf("stdin requires tty=true")
 		}
 	}
 	timer := time.NewTimer(yield)
@@ -431,13 +466,13 @@ func (m *Manager) Interact(ctx context.Context, id int64, chars string, yield ti
 		changed := p.changed
 		p.mu.Unlock()
 		if done {
-			return p.observe(budget), nil
+			return p.observeWithOptions(options), nil
 		}
 		select {
 		case <-ctx.Done():
-			return p.observe(budget), ctx.Err()
+			return p.observeWithOptions(options), ctx.Err()
 		case <-timer.C:
-			return p.observe(budget), nil
+			return p.observeWithOptions(options), nil
 		case <-changed:
 			if emit != nil && progressRemaining > 0 && time.Since(lastEmitted) >= 100*time.Millisecond {
 				p.mu.Lock()
@@ -461,6 +496,11 @@ func (p *shellProcess) peek() Snapshot {
 }
 
 func (p *shellProcess) observe(budget int) Snapshot {
+	return p.observeWithOptions(ObservationOptions{MaxOutputTokens: budget})
+}
+
+func (p *shellProcess) observeWithOptions(options ObservationOptions) Snapshot {
+	budget := options.MaxOutputTokens
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	s := p.snapshot
@@ -470,13 +510,18 @@ func (p *shellProcess) observe(budget int) Snapshot {
 		s.Truncated = true
 	}
 	index := int(start - p.dropped)
+	s.RequestedOutputTokens = budget
 	if budget <= 0 {
 		budget = 10000
 	}
-	if budget > 10000 {
-		budget = 10000
-	}
+	budget = min(budget, 10000)
+	s.EffectiveOutputTokens = budget
 	max := budget * 4
+	if options.IncludeSummary {
+		s.OutputSummary, s.SummaryOmittedBytes = p.summaryLocked(max / 2)
+		s.SummaryBytes = len(s.OutputSummary)
+		max -= s.SummaryBytes
+	}
 	data := p.buffer.bytes(index, max)
 	if p.buffer.size-index > max {
 		for len(data) > 0 && !utf8.Valid(data) {
@@ -579,6 +624,7 @@ func (m *Manager) Close() {
 			_ = os.Remove(p.snapshot.OutputFile)
 		}
 	}
+	m.closeShellSnapshots()
 	close(m.closeDone)
 }
 

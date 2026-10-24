@@ -15,16 +15,17 @@ type WaitResult struct {
 
 type View struct {
 	Progress
-	TaskName     string     `json:"task_name"`
-	SessionID    string     `json:"session_id,omitempty"`
-	AgentID      string     `json:"agent_id,omitempty"`
-	Generation   uint64     `json:"generation"`
-	Status       Status     `json:"status"`
-	Description  string     `json:"description,omitempty"`
-	StartedAt    time.Time  `json:"started_at,omitempty"`
-	FinishedAt   *time.Time `json:"finished_at,omitempty"`
-	ToolUseCount int        `json:"tool_use_count"`
-	TotalTokens  int        `json:"total_tokens"`
+	TaskName         string     `json:"task_name"`
+	SessionID        string     `json:"session_id,omitempty"`
+	AgentID          string     `json:"agent_id,omitempty"`
+	Generation       uint64     `json:"generation"`
+	Status           Status     `json:"status"`
+	PersistenceError string     `json:"persistence_error,omitempty"`
+	Description      string     `json:"description,omitempty"`
+	StartedAt        time.Time  `json:"started_at,omitempty"`
+	FinishedAt       *time.Time `json:"finished_at,omitempty"`
+	ToolUseCount     int        `json:"tool_use_count"`
+	TotalTokens      int        `json:"total_tokens"`
 }
 
 func ValidateTaskName(name string) error {

@@ -123,7 +123,7 @@ func TestSearchOutputBudgetDoesNotPublishPartialSchema(t *testing.T) {
 	huge.params["properties"].(map[string]any)["large_enum"] = map[string]any{"type": "string", "enum": []any{strings.Repeat("x", maxResultBytes*2)}}
 	c := New([]toolapi.Tool{huge})
 	r := c.SearchTool().Execute(t.Context(), map[string]any{"query": "uniquehuge"})
-	if r.IsError || len(resultNames(t, r)) != 0 || !strings.Contains(r.Content[0].Text, "omitted_tools") || len(r.Content[0].Text) > maxResultBytes {
+	if r.IsError || len(resultNames(t, r)) != 0 || !strings.Contains(r.Content[0].Text, "schema_pages") || len(r.Content[0].Text) > maxResultBytes {
 		t.Fatalf("budget result: %+v", r)
 	}
 	if strings.Contains(r.Content[0].Text, "large_enum") {
@@ -161,17 +161,12 @@ func TestLoadedAcceptsOnlyPairedSuccessfulCurrentIdentities(t *testing.T) {
 		},
 		"userCall":        func(h []types.Message) []types.Message { h[0].Role = "user"; return h },
 		"failedAssistant": func(h []types.Message) []types.Message { h[0].StopReason = "error"; return h },
-		"missingDetails":  func(h []types.Message) []types.Message { h[1].Details = nil; return h },
 		"redactedBody": func(h []types.Message) []types.Message {
 			h[1].Content = []types.Content{{Type: "text", Text: "safe redacted output"}}
 			return h
 		},
 		"partialSchema": func(h []types.Message) []types.Message {
 			h[1].Content = []types.Content{{Type: "text", Text: `{"tools":[{"name":"mcp_docs_read","type":"function","parameters":{}}]}`}}
-			return h
-		},
-		"removedTool": func(h []types.Message) []types.Message {
-			h[1].Details = map[string]any{"discovered_tools": []string{"removed_tool"}}
 			return h
 		},
 		"replayedErrorID": func(h []types.Message) []types.Message {
@@ -187,6 +182,13 @@ func TestLoadedAcceptsOnlyPairedSuccessfulCurrentIdentities(t *testing.T) {
 				t.Fatalf("unsafe loading %+v", got)
 			}
 		})
+	}
+	for _, details := range []any{nil, map[string]any{"discovered_tools": []string{"removed_tool"}}} {
+		h := pairedHistory("content_only", r)
+		h[1].Details = details
+		if got := c.Loaded(h); len(got) != 1 {
+			t.Fatalf("complete delivered declaration should not depend on details: %v", got)
+		}
 	}
 	if got := New(nil).Loaded(history); len(got) != 0 {
 		t.Fatal("removed catalog retained identity")

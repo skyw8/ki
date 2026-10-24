@@ -6,22 +6,34 @@ import (
 	"unicode/utf8"
 )
 
-func truncateHead(s string) (out string, note string) {
-	lines := strings.Split(s, "\n")
-	total := len(lines)
-	n := min(total, maxLines)
-	chunk := strings.Join(lines[:n], "\n")
-	for len(chunk) > maxBytes && n > 1 {
-		n--
-		chunk = strings.Join(lines[:n], "\n")
+func truncateHead(s string) (out, note string) {
+	total := strings.Count(s, "\n") + 1
+	end, n := 0, 0
+	for n < total && n < maxLines {
+		next := len(s)
+		if i := strings.IndexByte(s[end:], '\n'); i >= 0 {
+			next = end + i
+		}
+		if next > maxBytes {
+			if n == 0 {
+				return validUTF8Head(s, maxBytes), fmt.Sprintf("\n\n[%d byte limit reached. Use offset to continue.]", maxBytes)
+			}
+			break
+		}
+		n++
+		if next == len(s) {
+			end = next
+			break
+		}
+		end = next + 1
 	}
 	if n < total {
-		return chunk, fmt.Sprintf("\n\n[Showing lines 1-%d of %d. Use offset=%d to continue.]", n, total, n+1)
+		if end > 0 && s[end-1] == '\n' {
+			end--
+		}
+		return s[:end], fmt.Sprintf("\n\n[Showing lines 1-%d of %d. Use offset=%d to continue.]", n, total, n+1)
 	}
-	if len(chunk) > maxBytes {
-		return validUTF8Head(chunk, maxBytes), fmt.Sprintf("\n\n[%d byte limit reached. Use offset to continue.]", maxBytes)
-	}
-	return chunk, ""
+	return s[:end], ""
 }
 
 func validUTF8Head(s string, limit int) string {

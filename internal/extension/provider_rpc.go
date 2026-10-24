@@ -6,12 +6,22 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"ki/internal/loop"
 	"ki/internal/types"
 )
 
 const providerStreamQueueSize = 128
+
+type advisedProviderError struct {
+	err   error
+	after time.Time
+}
+
+func (e *advisedProviderError) Error() string         { return e.err.Error() }
+func (e *advisedProviderError) Unwrap() error         { return e.err }
+func (e *advisedProviderError) RetryAfter() time.Time { return e.after }
 
 type nonRetryableProviderError struct{ err error }
 
@@ -143,6 +153,9 @@ func (c *rpcClient) streamProvider(ctx context.Context, req ProviderStreamReques
 				if event.NonRetryable {
 					return acc, &nonRetryableProviderError{err: err}
 				}
+				if event.RetryAfter > 0 {
+					return acc, &advisedProviderError{err: err, after: time.UnixMilli(event.RetryAfter)}
+				}
 				return acc, err
 			default:
 				if event.Message != nil && event.Type == "start" {
@@ -266,7 +279,7 @@ func applyProviderStreamEvent(acc *types.Message, event ProviderStreamEvent) boo
 			block.Thinking += event.Delta
 		}
 		return true
-	case "toolcall_start", "toolcall_delta", "toolcall_end", "custom_tool_call_input_delta":
+	case "toolcall_start", "toolcall_delta", "toolcall_end", "toolcall_complete", "custom_tool_call_input_delta":
 		block := ensureStreamContent(acc, event.ContentIndex, "toolCall")
 		if event.ToolCall != nil {
 			incoming := *event.ToolCall

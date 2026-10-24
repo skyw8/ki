@@ -84,6 +84,9 @@ func (p *runEmitter) persist(ev *loop.Event) error {
 		return nil
 	}
 	switch ev.Type {
+	case loop.ToolCallReady:
+		_, err := p.sess.AppendDetailsEvent(string(ev.Type), map[string]any{"toolCallId": ev.ToolCallID, "toolName": ev.ToolName, "args": ev.Args, "timestamp": ev.Timestamp})
+		return err
 	case loop.MessageEnd:
 		if ev.Message == nil {
 			return nil

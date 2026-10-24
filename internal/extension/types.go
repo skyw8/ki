@@ -166,6 +166,7 @@ type ProviderStreamEvent struct {
 	Reason         string            `json:"reason,omitempty"`
 	Error          string            `json:"error,omitempty"`
 	NonRetryable   bool              `json:"nonRetryable,omitempty"`
+	RetryAfter     int64             `json:"retryAfter,omitzero"`
 }
 
 type ProviderAuthRequest struct {

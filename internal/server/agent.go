@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"ki/internal/agent"
+	"ki/internal/provider"
 	"ki/internal/session"
 	"ki/internal/telemetry"
 	"ki/internal/types"
@@ -41,9 +42,34 @@ func (s *Server) SpawnAgent(ctx context.Context, req agent.Request) (agent.Launc
 	if err != nil {
 		return agent.Launch{}, err
 	}
-	child, err := s.newAgentChild(parent, turns)
+	childModel := provider.ModelRef{Provider: parent.Config.Provider, Model: parent.Config.Model}
+	if req.Model != "" {
+		childModel, _, err = s.registry.ResolveSpec(req.Model, parent.Config.Provider)
+		if err != nil {
+			return agent.Launch{}, fmt.Errorf("resolve child model: %w", err)
+		}
+	}
+	_, modelInfo, ok := s.registry.FindModel(childModel.Provider, childModel.Model)
+	if !ok {
+		return agent.Launch{}, fmt.Errorf("child model %s/%s is unavailable", childModel.Provider, childModel.Model)
+	}
+	effortRequest := req.ThinkingEffort
+	if effortRequest == "" && req.Model == "" {
+		effortRequest = parent.Config.ThinkingEffort
+	}
+	effort, err := resolveThinking(modelInfo, effortRequest)
 	if err != nil {
-		return agent.Launch{}, fmt.Errorf("create agent session: %w", err)
+		return agent.Launch{}, fmt.Errorf("resolve child thinking effort: %w", err)
+	}
+	child, err := s.newAgentChild(ctx, parent, turns)
+	if err == nil {
+		err = child.SetModelAndThinking(childModel.Provider, childModel.Model, effort)
+	}
+	if err != nil {
+		if child != nil {
+			_ = child.Close()
+		}
+		return agent.Launch{}, fmt.Errorf("configure child model: %w", err)
 	}
 	childID := child.ID()
 	childDir := child.Dir
@@ -66,7 +92,7 @@ func (s *Server) SpawnAgent(ctx context.Context, req agent.Request) (agent.Launc
 	_ = child.Close()
 
 	outputFile := filepath.Join(childDir, "events.jsonl")
-	req.Prompt = fmt.Sprintf("You are %s, a child agent of %s. The task below comes from that agent. Final results are delivered automatically; use send_message to request a decision. The request_user_input_async tool is reserved for the main agent and rejects child-agent calls; send questions to your parent with send_message.\n\n%s", req.TaskPath, parentPath, req.Prompt)
+	req.Prompt = fmt.Sprintf("You are %s, a child agent of %s. The task below comes from that agent. Final results are delivered automatically; use send_message to request a decision. The request_user_input_async tool is reserved for the main agent and rejects child-agent calls; send questions to your parent with send_message. Inherited history is context only: prior tool calls, shell/process handles, approvals, and identities belong to ancestors and are not live resources for this child.\n\n%s", req.TaskPath, parentPath, req.Prompt)
 	req.SessionID = childID
 	req.MetadataPath = filepath.Join(childDir, "agent.json")
 	req.OutputFile = outputFile
@@ -81,17 +107,27 @@ func (s *Server) SpawnAgent(ctx context.Context, req agent.Request) (agent.Launc
 	return launch, nil
 }
 
-func (s *Server) newAgentChild(parent *session.Session, turns int) (*session.Session, error) {
+func (s *Server) newAgentChild(ctx context.Context, parent *session.Session, turns int) (*session.Session, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	metadata := map[string]any{"agent_fork": map[string]any{
+		"source_session":         parent.ID(),
+		"fork_turns":             turns,
+		"inherited_history":      turns != 0,
+		"tool_handles_inherited": false,
+		"approval_scope":         "child",
+	}}
 	if turns == 0 {
-		return session.CreateChild(s.cfg.Sessions.Root, parent)
+		return session.CreateChildWithMetadata(s.cfg.Sessions.Root, parent, metadata)
 	}
 	if boundary, ok := parent.LastUserBoundary(); ok {
 		if turns < 0 {
-			return session.ForkHistoryAt(s.cfg.Sessions.Root, parent, boundary, session.ForkModeTree)
+			return session.ForkHistoryAtContext(ctx, s.cfg.Sessions.Root, parent, boundary, metadata, session.ForkModeTree)
 		}
-		return session.ForkRecentHistoryAt(s.cfg.Sessions.Root, parent, boundary, turns)
+		return session.ForkRecentHistoryAtContext(ctx, s.cfg.Sessions.Root, parent, boundary, turns, metadata)
 	}
-	return session.CreateChild(s.cfg.Sessions.Root, parent)
+	return session.CreateChildWithMetadata(s.cfg.Sessions.Root, parent, metadata)
 }
 
 func (s *Server) agentRunner(childID string, base agent.Request) agent.Run {

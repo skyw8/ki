@@ -593,7 +593,7 @@ func TestProviderCompactRPCPreservesHTTPStatusAndBody(t *testing.T) {
 	sent := make(chan object, 1)
 	s.send = func(v object) { sent <- v }
 	s.compact = func(context.Context, object) (object, error) {
-		return nil, &httpFailure{422, `HTTP Error 422: Unprocessable Entity: {"error":{"message":"compaction unavailable"}}`}
+		return nil, &httpFailure{status: 422, message: `HTTP Error 422: Unprocessable Entity: {"error":{"message":"compaction unavailable"}}`}
 	}
 	s.handle(object{"id": "compact-error", "method": "provider.compact", "params": object{"provider": "openai-codex"}})
 	e := obj((<-sent)["error"])

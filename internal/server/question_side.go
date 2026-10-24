@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"os"
@@ -481,6 +482,32 @@ func (ops questionSideReadOps) Stat(ctx context.Context, path string) (os.FileIn
 	}
 	defer func() { _ = root.Close() }()
 	return root.Stat(rel)
+}
+
+func (ops questionSideReadOps) Open(ctx context.Context, path string) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	root, rel, err := ops.open(path)
+	if err != nil {
+		return nil, err
+	}
+	file, err := root.Open(rel)
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	return &sideReadFile{File: file, root: root}, nil
+}
+
+type sideReadFile struct {
+	*os.File
+	root *os.Root
+}
+
+func (f *sideReadFile) Close() error {
+	err := f.File.Close()
+	return errors.Join(err, f.root.Close())
 }
 
 func (ops questionSideReadOps) ReadFile(ctx context.Context, path string) ([]byte, error) {

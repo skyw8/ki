@@ -100,7 +100,14 @@ runState 异步执行 loop。`fork_turns` 默认 all，支持 none/N 个完整�
 
 agent.Controller 按 root 限制活跃 child turn（默认 4），完成后释放容量并保留身份。
 send_message 先持久化 context queue 再唤醒 live Inbox，idle 时不启动模型；followup_task
-接受显式工作，busy/容量满时持久排队并在名额释放时续跑。wait_agent 观察 mailbox/user
+接受显式工作，busy/容量满时持久排队并在名额释放时续跑。每个 root 的 ready FIFO 以 turn
+为单位轮转；仍有 pending 的 agent 在一轮结束后回到队尾，不扫描其他 root 或已结束的任务。
+中断先写 versioned `agent-stop.json` 取消意图，再更新 `agent.json`；恢复时重放尚未合并的
+意图，过滤已取消 pending，并认领被中断代次。持久化失败通过 `persistence_error` 和操作错误
+可见，自动续跑暂停，显式重试成功落盘后才恢复；所有写入皆失败时不能保证跨重启取消。
+`StopSubtreeContext` 的 ctx 仅取消观察，controller 后台保有 admission fence，直到所有 runner
+尾部和已接纳 spawn reservation 完整 drain；并发 waiter 共享该清理操作及聚合错误。
+wait_agent 观察 mailbox/user
 steer，list/wait 不认领结果。每代次完成通知写入结构 parent，上下文交付在 transcript 持久
 化时按 taskId/generation 去重；idle parent 无自动新轮次。agent.json v3 恢复身份与 pending，
 shell handle 不恢复。

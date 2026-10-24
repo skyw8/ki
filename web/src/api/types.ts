@@ -139,7 +139,7 @@ export type AgentSnapshot = {
  pending_tasks?: number; lifetime_stats_complete?: boolean; queue_wait_ms?: number; revision?: number; run_id?: string; phase?: string; waiting_for?: string; last_activity_at?: string
  current_tools?: { call_id: string; name: string; started_at: string }[]; run_stats?: AgentRunStats; agent_lifetime_stats?: AgentRunStats
  task_name: string; session_id: string; agent_id?: string; generation?: number; status: string
- description?: string; started_at?: string; finished_at?: string; tool_use_count?: number; total_tokens?: number
+ description?: string; started_at?: string; finished_at?: string; tool_use_count?: number; total_tokens?: number; persistence_error?: string
 }
 
 export type LoopEvent = {

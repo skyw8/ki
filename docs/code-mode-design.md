@@ -12,8 +12,9 @@ Ki 使用 **goja + 同一二进制的 session-scoped worker** 实现 JavaScript 
 的快照。设置页始终列出 `exec`/`wait`，可分别关闭；正在运行的代码和模型请求保持占用时的
 工具集合。
 
-MCP 声明仅在有可用 `search_tool` 时 Deferred：最初省略 exec 描述中的完整声明，搜索后按需
-补充；JS `tools`/`ALL_TOOLS` 自始拥有全部允许能力，不需要动态更新 VM。`search_tool` 不作为
+MCP 声明仅在有可用 `search_tool` 时 Deferred：最初省略模型声明，搜索或完整分片披露后按需
+补充直接工具 schema；exec 描述只保留短元数据和直接声明引用，不重复参数 schema。JS
+`tools`/`ALL_TOOLS` 自始拥有全部允许能力和短元数据，不需要动态更新 VM。`search_tool` 不作为
 嵌套 JS 方法；`request_user_input_async` 同样仅作模型直接控制工具，不进入 `tools` /
 `ALL_TOOLS`，避免把用户交互托管给 JS worker。只读逐题旁聊不开放 `exec` / `wait`。
 关闭搜索则直接披露全部允许声明。官方 SDK、配置及回退规则见
@@ -65,6 +66,14 @@ end note
 @enduml
 ```
 
+目录元数据在每次 occupy 只准备一次；模型可见投影按已完整披露的工具集合缓存，不缓存或
+越过 TransformContext 的历史判断。MCP 搜索索引由其 Manager 复用，活动 occupy 始终保持
+原目录；下一次 occupy 按新工具身份和 activeTools 选择缓存。
+
+父进程首次执行某个目录时按 SHA-256 注册短元数据；后续 `exec` 只发送目录引用与源码。
+worker 的注册目录有数量和字节预算，occupy 的终止屏障完成后清除，不能跨 occupy 保留能力。
+每条短描述最多 192 字节加输入类型指引，完整 schema 始终在宿主 registry 校验。
+
 发布 schemas 不占 worker 名额。第一次实际调用才创建逻辑 session，第一次 `exec` 才启动进程；
 后续 occupy 复用已提交的内存 store。worker 在 session 删除、runtime 关闭或 server shutdown
 时回收。进程故障不会自动重启或重放有副作用的 JS。
@@ -96,7 +105,7 @@ text(result.content.filter(item => item.type === "text").map(item => item.text).
 |---|---|
 | `tools.xxx(object)` | function 工具，返回 Promise |
 | `tools.xxx(string)` | freeform 工具，返回 Promise |
-| `ALL_TOOLS` | 允许工具的 `{name, description}` 元数据；exec 描述包含嵌套工具的输入 schema/字符串要求 |
+| `ALL_TOOLS` | 允许工具的 `{name, description}` 短元数据；参数见直接工具声明，未披露 MCP schema 通过 `search_tool` 获取；freeform 接收字符串 |
 | `text(value)` | 显式输出 |
 | `image(dataURLOrImageBlock)` | 转发内嵌图片 |
 | `generatedImage({image_url, output_hint?})` | 同 image，不接受 HTTP URL 或文件路径 |
@@ -174,6 +183,9 @@ worker 停止 cell。callback 的取消由 worker 停止后的 IPC 取消或终�
   在关闭 session 时释放。
 - 源码 256 KiB，IPC frame 16 MiB，单次中间结果和每 cell 总输出分别 8 MiB；store 4 MiB /
   1024 keys。
+- 每次执行最多 16384 条短工具元数据，与每 cell 512 次实际调用独立；目录注册最多 32 项、
+  总注册消息 32 MiB，并仍受每次请求 8 MiB/IPC frame 16 MiB 的传输边界限制。超限明确报错，
+  不把目录数量误算为调用次数。
 - 每 cell 最多 512 次工具调用 / 32 个 pending calls / 128 个 timers，调用栈深度 1024，执行
   期限 5 分钟。普通完成不延长该期限。
 - 输出 tokens 使用 Ki 的四 UTF-8 字节估计，并受 runtime 字节上限及最终 outer spool 约束，

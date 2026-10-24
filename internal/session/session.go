@@ -2,6 +2,7 @@ package session
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1121,21 +1122,37 @@ func Remove(dir string) error {
 }
 
 func (s *Session) appendLocked(e Entry) error {
-	e.CacheMiss = nil
-	b, err := json.Marshal(e)
+	return s.appendBatchLocked([]Entry{e})
+}
+
+func (s *Session) appendBatchLocked(entries []Entry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	var b []byte
+	for _, entry := range entries {
+		entry.CacheMiss = nil
+		line, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		if len(line) >= maxJSONLLineBytes {
+			return errors.New("session entry is too large")
+		}
+		b = append(b, line...)
+		b = append(b, '\n')
+	}
+	nextLeaf := entries[len(entries)-1].ID
+	nextConfig, err := s.appendRawAndConfigAtLeaf(b, s.leafID, nextLeaf)
 	if err != nil {
 		return err
 	}
-	if len(b) >= maxJSONLLineBytes {
-		return errors.New("session entry is too large")
+	for _, entry := range entries {
+		entry.CacheMiss = nil
+		s.entries = append(s.entries, entry)
+		s.byID[entry.ID] = entry
 	}
-	nextConfig, err := s.appendRawAndConfigAtLeaf(append(b, '\n'), s.leafID, e.ID)
-	if err != nil {
-		return err
-	}
-	s.entries = append(s.entries, e)
-	s.byID[e.ID] = e
-	s.leafID = e.ID
+	s.leafID = nextLeaf
 	s.Config = nextConfig
 	return nil
 }
@@ -1306,20 +1323,30 @@ func Fork(root string, src *Session) (*Session, error) {
 }
 
 func ForkAt(root string, src *Session, target string, requestedMode ...string) (*Session, error) {
-	return forkAt(root, src, target, nil, nil, requestedMode...)
+	return forkAtContext(context.Background(), root, src, target, nil, nil, requestedMode...)
 }
 
 func ForkHistoryAt(root string, src *Session, target string, requestedMode ...string) (*Session, error) {
 	return ForkHistoryAtWithMetadata(root, src, target, nil, requestedMode...)
 }
 
+func ForkHistoryAtContext(ctx context.Context, root string, src *Session, target string, metadata map[string]any, requestedMode ...string) (*Session, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return forkAtContext(ctx, root, src, target, func(e Entry) bool { return e.Type == "message" || e.Type == "compaction" }, metadata, requestedMode...)
+}
+
 func ForkHistoryAtWithMetadata(root string, src *Session, target string, metadata map[string]any, requestedMode ...string) (*Session, error) {
-	return forkAt(root, src, target, func(e Entry) bool {
+	return forkAtContext(context.Background(), root, src, target, func(e Entry) bool {
 		return e.Type == "message" || e.Type == "compaction"
 	}, metadata, requestedMode...)
 }
 
-func forkAt(root string, src *Session, target string, keep func(Entry) bool, metadata map[string]any, requestedMode ...string) (*Session, error) {
+func forkAtContext(ctx context.Context, root string, src *Session, target string, keep func(Entry) bool, metadata map[string]any, requestedMode ...string) (*Session, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	forkMode := ForkModeFlat
 	if len(requestedMode) > 0 {
 		var err error
@@ -1331,11 +1358,11 @@ func forkAt(root string, src *Session, target string, keep func(Entry) bool, met
 	src.mu.Lock()
 	cwd := src.Header.CWD
 	parent := src.Header.ID
-	cacheKey := src.Config.CacheKey
-	if cacheKey == "" {
-		cacheKey = src.Header.ID
-	}
 	cfg := src.Config
+	cacheKey := cfg.CacheKey
+	if cacheKey == "" {
+		cacheKey = parent
+	}
 	if target == "" {
 		target = src.leafID
 	}
@@ -1350,6 +1377,10 @@ func forkAt(root string, src *Session, target string, keep func(Entry) bool, met
 		filtered := make([]Entry, 0, len(entries))
 		prev := ""
 		for _, e := range entries {
+			if err := ctx.Err(); err != nil {
+				src.mu.Unlock()
+				return nil, err
+			}
 			if !keep(e) {
 				continue
 			}
@@ -1369,14 +1400,17 @@ func forkAt(root string, src *Session, target string, keep func(Entry) bool, met
 		return nil, err
 	}
 	dir := dst.Dir
-	attachmentRefs := referencedAttachments(entries, sourceDir)
-	for i := range entries {
-		rewriteEntryAttachmentPaths(&entries[i], sourceDir, dir)
-	}
 	fail := func(err error) (*Session, error) {
 		_ = dst.Close()
 		_ = os.RemoveAll(dir)
 		return nil, err
+	}
+	attachmentRefs := referencedAttachments(entries, sourceDir)
+	for i := range entries {
+		if err := ctx.Err(); err != nil {
+			return fail(err)
+		}
+		rewriteEntryAttachmentPaths(&entries[i], sourceDir, dir)
 	}
 	dst.Config = cfg
 	if metadata != nil {
@@ -1401,18 +1435,19 @@ func forkAt(root string, src *Session, target string, keep func(Entry) bool, met
 		_ = os.RemoveAll(dir)
 		return nil, err
 	}
-	for _, e := range entries {
-		dst.mu.Lock()
-		err = dst.appendLocked(e)
-		dst.mu.Unlock()
-		if err != nil {
-			return fail(err)
-		}
+	dst.mu.Lock()
+	err = dst.appendBatchLocked(entries)
+	dst.mu.Unlock()
+	if err != nil {
+		return fail(err)
 	}
 	if len(attachmentRefs) > 0 {
 		if err := copyAttachmentRefs(filepath.Join(sourceDir, "attachments"), filepath.Join(dir, "attachments"), attachmentRefs); err != nil {
 			return fail(err)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
 	}
 	return dst, nil
 }
@@ -1606,6 +1641,36 @@ func (t Toggle) Allowed(name string) bool {
 	return !slices.Contains(t.Disabled, name)
 }
 
+func ForkRecentHistoryAtContext(ctx context.Context, root string, src *Session, target string, turns int, metadata map[string]any) (*Session, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	src.mu.Lock()
+	entries := slices.Clone(src.leafEntriesLocked(target))
+	src.mu.Unlock()
+	start := 0
+	remaining := turns
+	for i := len(entries) - 1; i >= 0; i-- {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if entries[i].Type == "message" && entries[i].Message != nil && entries[i].Message.Role == "user" && !entries[i].Message.ContextOnly {
+			remaining--
+			if remaining == 0 {
+				start = i
+				break
+			}
+		}
+	}
+	keep := map[string]bool{}
+	for _, e := range entries[start:] {
+		if e.Type == "message" || e.Type == "compaction" {
+			keep[e.ID] = true
+		}
+	}
+	return forkAtContext(ctx, root, src, target, func(e Entry) bool { return keep[e.ID] }, metadata, ForkModeTree)
+}
+
 func ForkRecentHistoryAt(root string, src *Session, target string, turns int) (*Session, error) {
 	src.mu.Lock()
 	entries := slices.Clone(src.leafEntriesLocked(target))
@@ -1627,5 +1692,5 @@ func ForkRecentHistoryAt(root string, src *Session, target string, turns int) (*
 			keep[e.ID] = true
 		}
 	}
-	return forkAt(root, src, target, func(e Entry) bool { return keep[e.ID] }, nil, ForkModeTree)
+	return forkAtContext(context.Background(), root, src, target, func(e Entry) bool { return keep[e.ID] }, nil, ForkModeTree)
 }

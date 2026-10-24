@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -24,6 +25,8 @@ type Request struct {
 	TaskPath        string
 	RootSessionID   string
 	ForkTurns       string
+	Model           string
+	ThinkingEffort  string
 	ClientRequestID string
 	Description     string
 	Prompt          string
@@ -73,27 +76,28 @@ const agentMetadataVersion = 3
 
 type Metadata struct {
 	Progress
-	TaskName        string            `json:"task_name,omitempty"`
-	TaskPath        string            `json:"task_path,omitempty"`
-	RootSessionID   string            `json:"root_session_id,omitempty"`
-	ClientRequestID string            `json:"clientRequestId,omitempty"`
-	Version         int               `json:"version"`
-	TaskID          string            `json:"task_id"`
-	SessionID       string            `json:"session_id"`
-	ParentSessionID string            `json:"parent_session_id,omitempty"`
-	Description     string            `json:"description,omitempty"`
-	Prompt          string            `json:"prompt,omitempty"`
-	OutputFile      string            `json:"output_file,omitempty"`
-	Status          Status            `json:"status"`
-	Result          string            `json:"result,omitempty"`
-	Error           string            `json:"error,omitempty"`
-	ToolUseCount    int               `json:"tool_use_count,omitzero"`
-	TotalTokens     int               `json:"total_tokens,omitzero"`
-	StartedAt       time.Time         `json:"started_at,omitzero"`
-	FinishedAt      *time.Time        `json:"finished_at,omitempty"`
-	Pending         []Input           `json:"pending,omitempty"`
-	RunCount        uint64            `json:"run_count"`
-	Deliveries      map[uint64]string `json:"deliveries,omitempty"`
+	TaskName             string            `json:"task_name,omitempty"`
+	TaskPath             string            `json:"task_path,omitempty"`
+	RootSessionID        string            `json:"root_session_id,omitempty"`
+	ClientRequestID      string            `json:"clientRequestId,omitempty"`
+	Version              int               `json:"version"`
+	TaskID               string            `json:"task_id"`
+	SessionID            string            `json:"session_id"`
+	ParentSessionID      string            `json:"parent_session_id,omitempty"`
+	Description          string            `json:"description,omitempty"`
+	Prompt               string            `json:"prompt,omitempty"`
+	OutputFile           string            `json:"output_file,omitempty"`
+	Status               Status            `json:"status"`
+	Result               string            `json:"result,omitempty"`
+	Error                string            `json:"error,omitempty"`
+	ToolUseCount         int               `json:"tool_use_count,omitzero"`
+	TotalTokens          int               `json:"total_tokens,omitzero"`
+	StartedAt            time.Time         `json:"started_at,omitzero"`
+	FinishedAt           *time.Time        `json:"finished_at,omitempty"`
+	Pending              []Input           `json:"pending,omitempty"`
+	RunCount             uint64            `json:"run_count"`
+	Deliveries           map[uint64]string `json:"deliveries,omitempty"`
+	CancellationSequence uint64            `json:"cancellation_sequence,omitempty"`
 }
 
 var (
@@ -114,38 +118,49 @@ type Controller struct {
 	executionMu   sync.Mutex
 	executing     map[string]int
 	maxConcurrent int
+	ready         map[string]*readyQueue
+	persist       func(string, int, any, os.FileMode) error
 	reservations  map[string]chan struct{}
 	blocked       map[string]int
 	mu            sync.RWMutex
 	tasks         map[string]*agentTask
 	closed        bool
 	closeDone     chan struct{}
+	closeErr      error
+	stopMu        sync.Mutex
+	stops         map[string]*subtreeStop
+	cleanupWG     sync.WaitGroup
 	runWG         sync.WaitGroup
 	seq           atomic.Uint64
 }
 
 type agentTask struct {
-	activeTools     map[string]ToolActivity
-	admission       sync.Mutex
-	mu              sync.Mutex
-	snap            Snapshot
-	done            chan struct{}
-	doneClosed      bool
-	runDone         chan struct{}
-	active          bool
-	removed         bool
-	cancel          context.CancelFunc
-	run             Run
-	metadataPath    string
-	parentSessionID string
-	pending         []Input
-	runCount        uint64
-	deliveries      map[uint64]string
-	result          *Snapshot
+	activeTools            map[string]ToolActivity
+	admission              sync.Mutex
+	mu                     sync.Mutex
+	snap                   Snapshot
+	done                   chan struct{}
+	doneClosed             bool
+	runDone                chan struct{}
+	active                 bool
+	removed                bool
+	cancel                 context.CancelFunc
+	run                    Run
+	metadataPath           string
+	persist                func(string, int, any, os.FileMode) error
+	parentSessionID        string
+	pending                []Input
+	runCount               uint64
+	deliveries             map[uint64]string
+	result                 *Snapshot
+	stopWriteFailed        bool
+	cancellationSequence   uint64
+	cancellationPending    []string
+	cancellationGeneration uint64
 }
 
 func NewController() *Controller {
-	return &Controller{tasks: map[string]*agentTask{}, executing: map[string]int{}, maxConcurrent: 4, reservations: map[string]chan struct{}{}, blocked: map[string]int{}}
+	return &Controller{tasks: map[string]*agentTask{}, executing: map[string]int{}, ready: map[string]*readyQueue{}, maxConcurrent: 4, reservations: map[string]chan struct{}{}, blocked: map[string]int{}, persist: state.WriteVersioned}
 }
 
 func (s *Controller) Start(ctx context.Context, req Request, outputFile string, run Run) (Launch, error) {
@@ -165,6 +180,7 @@ func (s *Controller) Start(ctx context.Context, req Request, outputFile string, 
 		done:            make(chan struct{}),
 		run:             run,
 		metadataPath:    req.MetadataPath,
+		persist:         s.persist,
 		parentSessionID: req.ParentSessionID,
 	}
 	if err := s.startRun(ctx, task, req.Prompt, req.ClientRequestID, true); err != nil {
@@ -222,7 +238,7 @@ func (s *Controller) startRun(ctx context.Context, task *agentTask, prompt, requ
 		return fmt.Errorf("agent subtree is stopping")
 	}
 	s.executionMu.Lock()
-	if s.executing[root] >= s.maxConcurrent {
+	if s.executing[root] >= s.maxConcurrent || register && s.ready[root] != nil && len(s.ready[root].tasks) > 0 {
 		limit := s.maxConcurrent
 		s.executionMu.Unlock()
 		task.mu.Unlock()
@@ -308,7 +324,7 @@ func (s *Controller) startRun(ctx context.Context, task *agentTask, prompt, requ
 }
 
 func (s *Controller) executeRun(ctx context.Context, task *agentTask, generation uint64, prompt string, run Run, runDone chan struct{}, root string) {
-	release := sync.OnceFunc(func() { s.executionMu.Lock(); s.executing[root]--; s.executionMu.Unlock(); go s.resumeReady(root) })
+	release := sync.OnceFunc(func() { s.executionMu.Lock(); s.executing[root]--; s.executionMu.Unlock() })
 	defer release()
 	defer func() {
 		close(runDone)
@@ -321,11 +337,11 @@ func (s *Controller) executeRun(ctx context.Context, task *agentTask, generation
 	completion, err := run(ctx, task.snap.TaskID, prompt)
 
 	task.admission.Lock()
-	defer task.admission.Unlock()
 	task.mu.Lock()
 	if generation != task.runCount {
 		task.active = false
 		task.mu.Unlock()
+		task.admission.Unlock()
 		return
 	}
 	if task.snap.Status != Killed && task.snap.Status != Interrupted {
@@ -354,13 +370,15 @@ func (s *Controller) executeRun(ctx context.Context, task *agentTask, generation
 	}
 	task.cancel = nil
 	task.active = false
+	_ = task.persistLocked()
 	task.closeDoneLocked()
-	task.persistLocked()
 	task.mu.Unlock()
 
 	s.publishTask(task)
+	s.enqueueReady(task)
+	task.admission.Unlock()
 	release()
-	_, _ = s.startNext(ctx, task, false)
+	s.resumeReady(root)
 }
 
 func (t *agentTask) closeDoneLocked() {
@@ -382,7 +400,7 @@ func (t *agentTask) metadataLocked() Metadata {
 		Error: t.snap.Error, ToolUseCount: t.snap.ToolUseCount,
 		TotalTokens: t.snap.TotalTokens, StartedAt: t.snap.StartedAt,
 		FinishedAt: t.snap.FinishedAt, Pending: slices.Clone(t.pending),
-		RunCount: t.runCount, Deliveries: t.deliveries,
+		RunCount: t.runCount, Deliveries: t.deliveries, CancellationSequence: t.cancellationSequence,
 	}
 }
 
@@ -390,7 +408,96 @@ func (t *agentTask) persistLocked() error {
 	if t.metadataPath == "" {
 		return nil
 	}
-	return state.WriteVersioned(t.metadataPath, agentMetadataVersion, t.metadataLocked(), 0o600)
+	if t.stopWriteFailed {
+		return fmt.Errorf("agent cancellation is not durable: %s", t.snap.PersistenceError)
+	}
+	write := t.persist
+	if write == nil {
+		write = state.WriteVersioned
+	}
+	err := write(t.metadataPath, agentMetadataVersion, t.metadataLocked(), 0o600)
+	if err != nil {
+		t.snap.PersistenceError = err.Error()
+	} else {
+		t.snap.PersistenceError = ""
+		t.cancellationPending = nil
+		t.cancellationGeneration = 0
+	}
+	return err
+}
+
+type cancellationIntent struct {
+	Version     int      `json:"version"`
+	Sequence    uint64   `json:"sequence"`
+	TaskID      string   `json:"task_id"`
+	Generation  uint64   `json:"generation"`
+	Interrupted bool     `json:"interrupted"`
+	Pending     []string `json:"pending"`
+}
+
+func cancellationPath(path string) string {
+	return filepath.Join(filepath.Dir(path), "agent-stop.json")
+}
+
+func (t *agentTask) persistCancellationLocked(interrupted bool) error {
+	if t.metadataPath == "" {
+		return nil
+	}
+	for _, input := range t.pending {
+		t.cancellationPending = append(t.cancellationPending, input.ClientRequestID)
+	}
+	if interrupted {
+		t.cancellationGeneration = t.runCount
+	}
+	intent := cancellationIntent{Version: 1, Sequence: t.cancellationSequence + 1, TaskID: t.snap.TaskID, Generation: t.runCount, Interrupted: t.cancellationGeneration > 0, Pending: t.cancellationPending}
+	write := t.persist
+	if write == nil {
+		write = state.WriteVersioned
+	}
+	if err := write(cancellationPath(t.metadataPath), 1, intent, 0o600); err != nil {
+		return fmt.Errorf("persist cancellation intent: %w", err)
+	}
+	t.cancellationSequence = intent.Sequence
+	t.stopWriteFailed = false
+	return nil
+}
+
+func applyCancellation(path string, meta *Metadata) error {
+	data, _, err := state.ReadFile(cancellationPath(path), 1, nil)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read agent cancellation intent: %w", err)
+	}
+	var intent cancellationIntent
+	if err := json.Unmarshal(data, &intent); err != nil {
+		return fmt.Errorf("decode agent cancellation intent: %w", err)
+	}
+	if intent.TaskID != meta.TaskID {
+		return fmt.Errorf("agent cancellation intent identity mismatch")
+	}
+	if intent.Sequence <= meta.CancellationSequence {
+		return nil
+	}
+	discarded := make(map[string]bool, len(intent.Pending))
+	for _, id := range intent.Pending {
+		discarded[id] = true
+	}
+	meta.Pending = slices.DeleteFunc(meta.Pending, func(input Input) bool { return discarded[input.ClientRequestID] })
+	if intent.Interrupted {
+		if meta.Deliveries == nil {
+			meta.Deliveries = map[uint64]string{}
+		}
+		meta.Deliveries[intent.Generation] = "interrupted"
+	}
+	if meta.RunCount == intent.Generation {
+		meta.Status = Killed
+		meta.Phase = "settled"
+		meta.Error = "task interrupted"
+	}
+	meta.CancellationSequence = intent.Sequence
+	return nil
 }
 
 func (s *Controller) LoadMetadata(path string, run Run) (bool, error) {
@@ -419,8 +526,9 @@ func (s *Controller) LoadMetadata(path string, run Run) (bool, error) {
 		},
 		done: make(chan struct{}), doneClosed: true, run: run, metadataPath: path,
 		parentSessionID: meta.ParentSessionID,
+		persist:         s.persist,
 		pending:         slices.Clone(meta.Pending), runCount: meta.RunCount,
-		deliveries: meta.Deliveries,
+		deliveries: meta.Deliveries, cancellationSequence: meta.CancellationSequence,
 	}
 	if task.snap.Status == Running || task.snap.Status == Pending {
 		now := time.Now()
@@ -447,9 +555,9 @@ func (s *Controller) LoadMetadata(path string, run Run) (bool, error) {
 	s.tasks[meta.TaskID] = task
 	s.mu.Unlock()
 	task.mu.Lock()
-	task.persistLocked()
+	err = task.persistLocked()
 	task.mu.Unlock()
-	return true, nil
+	return true, err
 }
 
 func (s *Controller) QueueOrResume(ctx context.Context, id, message string) (string, error) {
@@ -464,7 +572,12 @@ func (s *Controller) QueueOrResume(ctx context.Context, id, message string) (str
 		return "", os.ErrNotExist
 	}
 	task.admission.Lock()
-	defer task.admission.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			task.admission.Unlock()
+		}
+	}()
 	requestID, err := idgen.NewV7()
 	if err != nil {
 		return "", err
@@ -509,14 +622,19 @@ func (s *Controller) QueueOrResume(ctx context.Context, id, message string) (str
 	if live {
 		return "queued", nil
 	}
-	started, err := s.startNext(ctx, task, true)
-	if errors.Is(err, errAgentCapacity) || errors.Is(err, errAgentBusy) {
-		return "queued", nil
+	task.mu.Lock()
+	generation := task.runCount
+	task.mu.Unlock()
+	s.enqueueReady(task)
+	locked = false
+	task.admission.Unlock()
+	s.resumeReady(root)
+	task.mu.Lock()
+	defer task.mu.Unlock()
+	if task.snap.PersistenceError != "" {
+		return "", fmt.Errorf("persist agent %s: %s", id, task.snap.PersistenceError)
 	}
-	if err != nil {
-		return "", err
-	}
-	if started {
+	if task.runCount > generation {
 		return "resumed", nil
 	}
 	return "queued", nil
@@ -528,8 +646,25 @@ func (s *Controller) ResumePending(id string) (bool, error) {
 		return false, os.ErrNotExist
 	}
 	task.admission.Lock()
-	defer task.admission.Unlock()
-	return s.startNext(context.Background(), task, false)
+	task.mu.Lock()
+	generation := task.runCount
+	root := taskRoot(task)
+	err := task.persistLocked()
+	task.mu.Unlock()
+	if err == nil {
+		s.enqueueReady(task)
+	}
+	task.admission.Unlock()
+	if err != nil {
+		return false, err
+	}
+	s.resumeReady(root)
+	task.mu.Lock()
+	defer task.mu.Unlock()
+	if task.snap.PersistenceError != "" {
+		return false, fmt.Errorf("persist agent %s: %s", id, task.snap.PersistenceError)
+	}
+	return task.runCount > generation, nil
 }
 
 func (s *Controller) startNext(ctx context.Context, task *agentTask, _ bool) (bool, error) {
@@ -540,7 +675,7 @@ func (s *Controller) startNext(ctx context.Context, task *agentTask, _ bool) (bo
 		return false, errTaskStoreClosed
 	}
 	task.mu.Lock()
-	if task.removed || task.active || len(task.pending) == 0 {
+	if task.removed || task.active || len(task.pending) == 0 || task.snap.PersistenceError != "" {
 		task.mu.Unlock()
 		return false, nil
 	}
@@ -578,29 +713,82 @@ func (s *Controller) markWaitingForCapacity(task *agentTask) error {
 	return err
 }
 
-func (s *Controller) resumeReady(root string) {
-	s.mu.RLock()
-	if s.closed {
-		s.mu.RUnlock()
+type readyQueue struct {
+	dispatch sync.Mutex
+	tasks    []*agentTask
+	members  map[*agentTask]bool
+}
+
+func taskRoot(task *agentTask) string {
+	if task.snap.RootSessionID != "" {
+		return task.snap.RootSessionID
+	}
+	return task.parentSessionID
+}
+
+func (s *Controller) enqueueReady(task *agentTask) {
+	if err := s.markWaitingForCapacity(task); err != nil {
 		return
 	}
-	ids := []string{}
-	for id, task := range s.tasks {
-		task.mu.Lock()
-		taskRoot := task.snap.RootSessionID
-		if taskRoot == "" {
-			taskRoot = task.parentSessionID
-		}
-		match := taskRoot == root && !task.active && len(task.pending) > 0
-		task.mu.Unlock()
-		if match {
-			ids = append(ids, id)
-		}
+	task.mu.Lock()
+	defer task.mu.Unlock()
+	if task.active || task.removed || len(task.pending) == 0 || task.snap.PersistenceError != "" {
+		return
 	}
-	s.mu.RUnlock()
-	slices.Sort(ids)
-	for _, id := range ids {
-		if _, err := s.ResumePending(id); errors.Is(err, errAgentCapacity) {
+	root := taskRoot(task)
+	s.executionMu.Lock()
+	defer s.executionMu.Unlock()
+	queue := s.ready[root]
+	if queue == nil {
+		queue = &readyQueue{members: map[*agentTask]bool{}}
+		s.ready[root] = queue
+	}
+	if !queue.members[task] {
+		queue.members[task] = true
+		queue.tasks = append(queue.tasks, task)
+	}
+}
+
+func (s *Controller) resumeReady(root string) {
+	s.executionMu.Lock()
+	queue := s.ready[root]
+	s.executionMu.Unlock()
+	if queue == nil {
+		return
+	}
+	if !queue.dispatch.TryLock() {
+		return
+	}
+	defer func() {
+		queue.dispatch.Unlock()
+		s.executionMu.Lock()
+		ready := len(queue.tasks) > 0 && s.executing[root] < s.maxConcurrent
+		s.executionMu.Unlock()
+		if ready {
+			go s.resumeReady(root)
+		}
+	}()
+	for {
+		s.executionMu.Lock()
+		if s.executing[root] >= s.maxConcurrent || len(queue.tasks) == 0 {
+			s.executionMu.Unlock()
+			return
+		}
+		task := queue.tasks[0]
+		queue.tasks[0] = nil
+		queue.tasks = queue.tasks[1:]
+		delete(queue.members, task)
+		s.executionMu.Unlock()
+		task.admission.Lock()
+		_, err := s.startNext(context.Background(), task, false)
+		task.admission.Unlock()
+		if errors.Is(err, errAgentCapacity) {
+			s.executionMu.Lock()
+			if !queue.members[task] {
+				queue.tasks = append([]*agentTask{task}, queue.tasks...)
+				queue.members[task] = true
+			}
+			s.executionMu.Unlock()
 			return
 		}
 	}
@@ -613,27 +801,35 @@ func (s *Controller) CommitNotification(identity types.CompletionIdentity, persi
 	}
 	task.mu.Lock()
 	defer task.mu.Unlock()
-	if task.removed || identity.Generation == 0 || task.deliveries[identity.Generation] != "" {
+	if task.removed || identity.Generation == 0 {
+		return false, nil
+	}
+	if task.deliveries[identity.Generation] != "" {
+		if task.snap.PersistenceError != "" {
+			return false, task.persistLocked()
+		}
 		return false, nil
 	}
 	if err := persist(); err != nil {
 		return false, err
 	}
-	task.recordDeliveryLocked(identity.Generation, "notification")
+	if err := task.recordDeliveryLocked(identity.Generation, "notification"); err != nil {
+		return true, fmt.Errorf("persist agent completion claim: %w", err)
+	}
 	return true, nil
 }
 
-func (t *agentTask) recordDeliveryLocked(generation uint64, owner string) {
+func (t *agentTask) recordDeliveryLocked(generation uint64, owner string) error {
 	if t.deliveries == nil {
 		t.deliveries = make(map[uint64]string)
 	}
 	t.deliveries[generation] = owner
-	t.persistLocked()
+	return t.persistLocked()
 }
 
 func (s *Controller) markConsumedLocked(task *agentTask) {
 	if !task.removed && task.runCount > 0 && task.deliveries[task.runCount] == "" {
-		task.recordDeliveryLocked(task.runCount, "interrupted")
+		_ = task.recordDeliveryLocked(task.runCount, "interrupted")
 	}
 }
 
@@ -766,20 +962,73 @@ func (s *Controller) Stop(id string) (Snapshot, error) {
 	return snapshot, err
 }
 
+type subtreeStop struct {
+	done      chan struct{}
+	snapshots []Snapshot
+	err       error
+}
+
 func (s *Controller) StopSubtree(sessionID string) ([]Snapshot, error) {
-	return s.stopSubtree(sessionID, true)
+	return s.StopSubtreeContext(context.Background(), sessionID)
+}
+
+func (s *Controller) StopSubtreeContext(ctx context.Context, sessionID string) ([]Snapshot, error) {
+	return s.stopSubtreeContext(ctx, sessionID, true)
 }
 
 func (s *Controller) StopDescendants(sessionID string) ([]Snapshot, error) {
-	return s.stopSubtree(sessionID, false)
+	return s.stopSubtreeContext(context.Background(), sessionID, false)
 }
 
-func (s *Controller) stopSubtree(sessionID string, includeSelf bool) ([]Snapshot, error) {
-	release, drained, err := s.FenceSubtreeAdmission(sessionID)
-	if err != nil {
-		return nil, err
+func (s *Controller) stopSubtreeContext(ctx context.Context, sessionID string, includeSelf bool) ([]Snapshot, error) {
+	key := fmt.Sprintf("%s:%t", sessionID, includeSelf)
+	s.stopMu.Lock()
+	operation := s.stops[key]
+	if operation == nil {
+		release, drained, err := s.FenceSubtreeAdmission(sessionID)
+		if err != nil {
+			s.stopMu.Unlock()
+			return nil, err
+		}
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			s.stopMu.Unlock()
+			release()
+			return nil, errTaskStoreClosed
+		}
+		s.cleanupWG.Add(1)
+		s.mu.Unlock()
+		operation = &subtreeStop{done: make(chan struct{})}
+		if s.stops == nil {
+			s.stops = map[string]*subtreeStop{}
+		}
+		s.stops[key] = operation
+		go func() {
+			defer s.cleanupWG.Done()
+			operation.snapshots, operation.err = s.stopSubtreeOwned(sessionID, includeSelf, drained)
+			release()
+			s.stopMu.Lock()
+			close(operation.done)
+			delete(s.stops, key)
+			s.stopMu.Unlock()
+		}()
 	}
-	defer release()
+	s.stopMu.Unlock()
+	select {
+	case <-operation.done:
+		return operation.snapshots, operation.err
+	default:
+	}
+	select {
+	case <-operation.done:
+		return operation.snapshots, operation.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (s *Controller) stopSubtreeOwned(sessionID string, includeSelf bool, drained <-chan struct{}) ([]Snapshot, error) {
 	root, path, err := s.Identity(sessionID)
 	if err != nil {
 		return nil, err
@@ -795,8 +1044,12 @@ func (s *Controller) stopSubtree(sessionID string, includeSelf bool) ([]Snapshot
 	s.mu.RUnlock()
 	snapshots := make([]Snapshot, 0, len(tasks))
 	runs := make([]<-chan struct{}, 0, len(tasks))
+	var stopErr error
 	for _, task := range tasks {
-		snapshot, runDone, _ := s.stopTask(task)
+		snapshot, runDone, err := s.stopTask(task)
+		if err != nil && !errors.Is(err, errTaskNotRunning) {
+			stopErr = errors.Join(stopErr, fmt.Errorf("stop agent %s: %w", snapshot.TaskID, err))
+		}
 		snapshots = append(snapshots, snapshot)
 		if runDone != nil {
 			runs = append(runs, runDone)
@@ -809,18 +1062,19 @@ func (s *Controller) stopSubtree(sessionID string, includeSelf bool) ([]Snapshot
 		<-done
 	}
 	<-drained
-	return snapshots, nil
+	return snapshots, stopErr
 }
 
 func (s *Controller) stopTask(task *agentTask) (Snapshot, <-chan struct{}, error) {
 	task.mu.Lock()
-	if isTerminal(task.snap.Status) && len(task.pending) == 0 {
+	if isTerminal(task.snap.Status) && len(task.pending) == 0 && task.snap.PersistenceError == "" {
 		snapshot := task.snap
 		runDone := task.runDone
 		task.mu.Unlock()
 		return snapshot, runDone, errTaskNotRunning
 	}
 	interruptedGeneration := task.active
+	intentErr := task.persistCancellationLocked(interruptedGeneration)
 	if task.cancel != nil {
 		task.cancel()
 	}
@@ -835,14 +1089,20 @@ func (s *Controller) stopTask(task *agentTask) (Snapshot, <-chan struct{}, error
 	task.pending = nil
 	task.snap.PendingTasks = 0
 	if interruptedGeneration {
-		s.markConsumedLocked(task)
+		if task.deliveries == nil {
+			task.deliveries = map[uint64]string{}
+		}
+		task.deliveries[task.runCount] = "interrupted"
+	}
+	persistErr := task.persistLocked()
+	if intentErr != nil && persistErr != nil {
+		task.stopWriteFailed = true
 	}
 	task.closeDoneLocked()
-	task.persistLocked()
 	runDone := task.runDone
 	snapshot := task.snap
 	task.mu.Unlock()
-	return snapshot, runDone, nil
+	return snapshot, runDone, errors.Join(intentErr, persistErr)
 }
 
 func (s *Controller) Close() {
@@ -868,18 +1128,19 @@ func (s *Controller) CloseContext(ctx context.Context) error {
 	s.mu.Unlock()
 	select {
 	case <-done:
-		return nil
+		return s.closeErr
 	default:
 	}
 	select {
 	case <-done:
-		return nil
+		return s.closeErr
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
 func (s *Controller) closeOwned(tasks []*agentTask, reservations []<-chan struct{}, done chan struct{}) {
+	var closeErr error
 	for _, task := range tasks {
 		task.mu.Lock()
 		if task.active || task.snap.Status == Running || task.snap.Status == Pending {
@@ -894,15 +1155,23 @@ func (s *Controller) closeOwned(tasks []*agentTask, reservations []<-chan struct
 			task.snap.Revision++
 			task.snap.FinishedAt = &now
 			task.snap.Error = "server stopped"
+			if err := task.persistLocked(); err != nil {
+				closeErr = errors.Join(closeErr, fmt.Errorf("close agent %s: %w", task.snap.TaskID, err))
+			}
 			task.closeDoneLocked()
-			task.persistLocked()
+		} else if task.snap.PersistenceError != "" {
+			if err := task.persistLocked(); err != nil {
+				closeErr = errors.Join(closeErr, fmt.Errorf("close agent %s: %w", task.snap.TaskID, err))
+			}
 		}
 		task.mu.Unlock()
 	}
 	s.runWG.Wait()
+	s.cleanupWG.Wait()
 	for _, reservation := range reservations {
 		<-reservation
 	}
+	s.closeErr = closeErr
 	close(done)
 }
 
@@ -982,6 +1251,9 @@ func ReadMetadata(path string) (Metadata, error) {
 	var meta Metadata
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return Metadata{}, fmt.Errorf("decode agent metadata %s: %w", path, err)
+	}
+	if err := applyCancellation(path, &meta); err != nil {
+		return Metadata{}, err
 	}
 	return meta, nil
 }

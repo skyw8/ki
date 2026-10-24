@@ -38,3 +38,30 @@ type ArgumentDiffProvider interface {
 type Validator interface {
 	Validate(args map[string]any) error
 }
+
+type ExecutionPolicy struct {
+	Group         string
+	MaxConcurrent int
+	Exclusive     bool
+	ReadOnly      bool
+	Orchestrator  bool
+}
+
+type ExecutionPolicyProvider interface {
+	ExecutionPolicy() ExecutionPolicy
+}
+
+func PolicyFor(t Tool) ExecutionPolicy {
+	if provider, ok := t.(ExecutionPolicyProvider); ok {
+		return provider.ExecutionPolicy()
+	}
+	name := MustCanonical(t.Name())
+	switch name {
+	case "exec", "wait":
+		return ExecutionPolicy{Orchestrator: true}
+	case "read", "grep", "glob", "list_agents":
+		return ExecutionPolicy{ReadOnly: true}
+	default:
+		return ExecutionPolicy{}
+	}
+}

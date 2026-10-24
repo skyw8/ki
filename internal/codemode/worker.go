@@ -2,6 +2,8 @@ package codemode
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,6 +15,8 @@ func ServeWorker(ctx context.Context, r io.Reader, w io.Writer, limits Limits) e
 	var mu sync.Mutex
 	var session *Session
 	var transport *peer
+	catalogs := make(map[string][]ToolDefinition)
+	catalogBytes := 0
 	handler := func(ctx context.Context, op string, data json.RawMessage) (any, error) {
 		mu.Lock()
 		s := session
@@ -38,10 +42,45 @@ func ServeWorker(ctx context.Context, r io.Reader, w io.Writer, limits Limits) e
 			return nil, errors.New("code mode worker is not initialized")
 		}
 		switch op {
+		case "catalog":
+			var req catalogRequest
+			if err := json.Unmarshal(data, &req); err != nil {
+				return nil, err
+			}
+			raw, err := json.Marshal(req.Tools)
+			if err != nil {
+				return nil, err
+			}
+			digest := sha256.Sum256(raw)
+			if req.ID != hex.EncodeToString(digest[:]) {
+				return nil, errors.New("invalid catalog identity")
+			}
+			if err := validateRequest(ExecuteRequest{ParentCallID: "catalog", Source: "0", Tools: req.Tools}, s.backend.(*localSession).limits); err != nil {
+				return nil, err
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if _, exists := catalogs[req.ID]; !exists {
+				if len(catalogs) >= 32 || catalogBytes+len(data) > limits.MaxFrameBytes*2 {
+					return nil, errors.New("worker catalog registration budget exceeded")
+				}
+				catalogs[req.ID] = req.Tools
+				catalogBytes += len(data)
+			}
+			return struct{}{}, nil
 		case "execute":
 			var req ExecuteRequest
 			if err := json.Unmarshal(data, &req); err != nil {
 				return nil, err
+			}
+			if req.CatalogID != "" {
+				mu.Lock()
+				definitions, exists := catalogs[req.CatalogID]
+				req.Tools = definitions
+				mu.Unlock()
+				if !exists {
+					return nil, errors.New("unknown registered tool catalog")
+				}
 			}
 			cb := Callbacks{
 				Invoke: func(ctx context.Context, inv Invocation) (result ToolResult, err error) {
@@ -67,7 +106,12 @@ func ServeWorker(ctx context.Context, r io.Reader, w io.Writer, limits Limits) e
 			}
 			return s.Wait(ctx, req)
 		case "terminateAll":
-			return struct{}{}, s.TerminateAll(ctx)
+			err := s.TerminateAll(ctx)
+			mu.Lock()
+			clear(catalogs)
+			catalogBytes = 0
+			mu.Unlock()
+			return struct{}{}, err
 		case "stopAll":
 			s.backend.(*localSession).stopAll()
 			return struct{}{}, nil

@@ -17,7 +17,7 @@ func TestAgentToolSchemaAndBackgroundResult(t *testing.T) {
 	if err := tool.Validate(map[string]any{"task_name": "child", "message": "do it"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range []map[string]any{{"task_name": "child", "message": "do it", "model": "other/model"}, {"task_name": "child"}, {"task_name": "Child", "message": "do it"}, {"task_name": "child", "message": "do it", "run_in_background": true}} {
+	for _, args := range []map[string]any{{"task_name": "child"}, {"task_name": "child", "message": "do it", "effort": 42}, {"task_name": "Child", "message": "do it"}, {"task_name": "child", "message": "do it", "run_in_background": true}} {
 		if err := tool.Validate(args); err == nil {
 			t.Fatalf("invalid args accepted: %v", args)
 		}

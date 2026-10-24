@@ -125,7 +125,7 @@ func mcpAssertLoadedSchema(t *testing.T, req loop.Request, loaded bool) {
 	t.Helper()
 	_, direct := mcpRequestSpec(req, mcpSearchName)
 	exec, ok := mcpRequestSpec(req, "exec")
-	if !ok || strings.Contains(exec.Description, "mcp_query_unique") != loaded {
+	if !ok || strings.Contains(exec.Description, "### tools."+mcpSearchName+"\n") != loaded || strings.Contains(exec.Description, "mcp_query_unique") {
 		t.Fatalf("loaded=%v exec description=%s", loaded, exec.Description)
 	}
 	if strings.Contains(exec.Description, "document_id_unique") {
@@ -201,15 +201,89 @@ func TestMCPServerDisabledSearchFallsBackToDirect(t *testing.T) {
 		t.Fatal("disabled search was advertised")
 	}
 	exec, _ := mcpRequestSpec(got, "exec")
-	for _, field := range []string{"mcp_query_unique", "document_id_unique"} {
-		if !strings.Contains(exec.Description, field) {
-			t.Fatalf("disabled search stranded nested MCP tool: missing %s", field)
+	for _, name := range []string{mcpSearchName, mcpReadName} {
+		if !strings.Contains(exec.Description, "### tools."+name+"\n") {
+			t.Fatalf("disabled search stranded nested MCP tool: missing %s", name)
 		}
+	}
+	if strings.Contains(exec.Description, "mcp_query_unique") || strings.Contains(exec.Description, "document_id_unique") {
+		t.Fatal("MCP schema duplicated into exec description")
 	}
 	for _, name := range []string{mcpSearchName, mcpReadName} {
 		if _, present := mcpRequestSpec(got, name); !present {
 			t.Fatalf("disabled search stranded direct MCP tool: %s", name)
 		}
+	}
+}
+
+func TestMCPServerLargeDeclarationPagesActivateOnlyAfterCompletion(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "large-schema", Version: "1"}, nil)
+	parameters := map[string]any{"type": "object", "properties": map[string]any{"key": map[string]any{"type": "string", "description": strings.Repeat("large_marker_中文", 3000)}}}
+	raw, _ := json.Marshal(parameters)
+	server.AddTool(&mcp.Tool{Name: "large", Description: "large_unique_lookup", InputSchema: json.RawMessage(raw)}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{}, nil
+	})
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true}))
+	t.Cleanup(httpServer.Close)
+	name := "mcp__fixture__large"
+	step := 0
+	finished := false
+	srv := newMCPIntegrationServer(t, mcpServerConfig(t, httpServer.URL), codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
+		step++
+		call := func(args map[string]any) types.Message {
+			return types.Message{Role: "assistant", StopReason: "toolUse", Content: []types.Content{{Type: "toolCall", ID: fmt.Sprintf("page-%d", step), Name: "search_tool", Arguments: args}}}
+		}
+		if step == 1 {
+			return call(map[string]any{"query": "large_unique_lookup", "limit": 1}), nil
+		}
+		if step > 64 {
+			t.Fatal("page discovery did not finish")
+		}
+		_, results := codeModeTurn(req)
+		if len(results) == 0 || results[len(results)-1].IsError {
+			t.Fatalf("invalid page result count=%d", len(results))
+		}
+		result := results[len(results)-1]
+		var body struct {
+			Pages []any `json:"schema_pages"`
+			Page  *struct {
+				Next string `json:"next_cursor"`
+			} `json:"schema_page"`
+		}
+		if err := json.Unmarshal([]byte(result.Text()), &body); err != nil {
+			t.Fatal(err)
+		}
+		_, loaded := mcpRequestSpec(req, name)
+		if body.Page != nil && body.Page.Next == "" {
+			if !loaded {
+				t.Fatal("complete schema was not promoted")
+			}
+			spec, _ := mcpRequestSpec(req, name)
+			if !strings.Contains(codeModeJSON(t, spec.Parameters), "large_marker_") {
+				t.Fatal("complete direct schema missing")
+			}
+			exec, _ := mcpRequestSpec(req, "exec")
+			if strings.Contains(exec.Description, "large_marker_") {
+				t.Fatal("large schema repeated in exec")
+			}
+			finished = true
+			return codeModeStop(), nil
+		}
+		if loaded {
+			t.Fatal("incomplete schema promoted")
+		}
+		if body.Page == nil {
+			if len(body.Pages) != 1 {
+				t.Fatal("large schema had no page hint")
+			}
+			return call(map[string]any{"name": name}), nil
+		}
+		return call(map[string]any{"name": name, "cursor": body.Page.Next}), nil
+	}))
+	id := codeModeTestSession(t, srv, t.TempDir(), "completions")
+	codeModeRunPrompt(t, srv, id, "fetch complete schema")
+	if !finished || step < 4 {
+		t.Fatalf("finished=%v steps=%d", finished, step)
 	}
 }
 

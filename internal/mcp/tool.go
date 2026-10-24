@@ -20,17 +20,21 @@ import (
 )
 
 type adapter struct {
-	manager     *Manager
-	session     *sdk.ClientSession
-	server      string
-	raw         string
-	name        string
-	description string
-	source      string
-	parameters  map[string]any
-	validator   *jsonschema.Resolved
-	timeout     time.Duration
-	schemaBytes int
+	manager         *Manager
+	session         *sdk.ClientSession
+	server          string
+	raw             string
+	name            string
+	description     string
+	source          string
+	parameters      map[string]any
+	validator       *jsonschema.Resolved
+	timeout         time.Duration
+	schemaBytes     int
+	catalogIdentity *adapter
+	readOnly        bool
+	parallel        bool
+	maxConcurrent   int
 }
 
 func newAdapter(m *Manager, session *sdk.ClientSession, server, source string, timeout time.Duration, remote *sdk.Tool) (*adapter, error) {
@@ -60,16 +64,48 @@ func newAdapter(m *Manager, session *sdk.ClientSession, server, source string, t
 	}, nil
 }
 
+func (t *adapter) DiscoveryCacheIdentity() any {
+	identity := t.catalogIdentity
+	if identity == nil {
+		identity = t
+	}
+	return identity
+}
+
+func (t *adapter) ExecutionPolicy() tool.ExecutionPolicy {
+	return tool.ExecutionPolicy{Group: "mcp:" + t.server, MaxConcurrent: t.maxConcurrent, Exclusive: !t.parallel, ReadOnly: t.readOnly}
+}
+
 func (t *adapter) Name() string                 { return t.name }
 func (t *adapter) Description() string          { return t.description }
 func (t *adapter) Prompt() string               { return "" }
 func (t *adapter) Snippet() string              { return "" }
 func (t *adapter) SourceInfo() (string, string) { return t.server, t.source }
+func (t *adapter) ToolSpec() tool.Spec {
+	return tool.Spec{Type: "function", Name: t.name, Description: t.description + "\n\n", Parameters: t.Parameters()}
+}
+
+func cloneParameter(value any) any {
+	switch value := value.(type) {
+	case map[string]any:
+		copy := make(map[string]any, len(value))
+		for key, item := range value {
+			copy[key] = cloneParameter(item)
+		}
+		return copy
+	case []any:
+		copy := make([]any, len(value))
+		for i, item := range value {
+			copy[i] = cloneParameter(item)
+		}
+		return copy
+	default:
+		return value
+	}
+}
+
 func (t *adapter) Parameters() map[string]any {
-	data, _ := json.Marshal(t.parameters)
-	var out map[string]any
-	_ = json.Unmarshal(data, &out)
-	return out
+	return cloneParameter(t.parameters).(map[string]any)
 }
 func (t *adapter) Validate(args map[string]any) error {
 	if args == nil {
@@ -209,11 +245,14 @@ func normalizeCatalogNames(adapters []*adapter) []tool.Tool {
 	}
 	out := make([]tool.Tool, len(adapters))
 	for i, t := range adapters {
-		copy := *t
 		if collisions[i] {
+			copy := *t
+			copy.catalogIdentity = t
 			copy.name = hashedName(t.name, t.server, t.raw)
+			out[i] = &copy
+		} else {
+			out[i] = t
 		}
-		out[i] = &copy
 	}
 	slices.SortFunc(out, func(a, b tool.Tool) int { return strings.Compare(a.Name(), b.Name()) })
 	return out

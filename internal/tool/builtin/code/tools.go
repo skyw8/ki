@@ -47,12 +47,17 @@ type Set struct {
 	GetSession func() (*codemode.Session, error)
 	Callbacks  codemode.Callbacks
 	Nested     []toolapi.Tool
+	Catalog    *Catalog
 	Deferred   map[string]bool
 	Freeform   bool
 }
 
 func (s Set) Build() []toolapi.Tool {
-	defs, description := definitionsWithDeferred(s.Nested, s.Deferred)
+	catalog := s.Catalog
+	if catalog == nil {
+		catalog = Prepare(s.Nested)
+	}
+	defs, description := catalog.project(s.Deferred)
 	return []toolapi.Tool{
 		&execTool{session: s.Session, getSession: s.GetSession, callbacks: s.Callbacks, tools: defs, description: description, freeform: s.Freeform},
 		&waitTool{session: s.Session, getSession: s.GetSession},
@@ -64,37 +69,61 @@ func definitions(nested []toolapi.Tool) ([]codemode.ToolDefinition, string) {
 }
 
 func definitionsWithDeferred(nested []toolapi.Tool, deferred map[string]bool) ([]codemode.ToolDefinition, string) {
+	return Prepare(nested).project(deferred)
+}
+
+type Catalog struct {
+	definitions []codemode.ToolDefinition
+}
+
+func Prepare(nested []toolapi.Tool) *Catalog {
 	sorted := slices.Clone(nested)
 	slices.SortFunc(sorted, func(a, b toolapi.Tool) int {
 		return strings.Compare(toolapi.MustCanonical(a.Name()), toolapi.MustCanonical(b.Name()))
 	})
 	var defs []codemode.ToolDefinition
-	var b strings.Builder
-	omitted := false
 	for _, t := range sorted {
 		spec := toolapi.SpecFor(t)
 		if spec.Name == catalog.CodeExec || spec.Name == catalog.CodeWait || spec.Name == discovery.Name || spec.Name == catalog.RequestUserInputAsync {
 			continue
 		}
-		description := strings.TrimSpace(spec.Description)
+		description := compactText(strings.TrimSpace(spec.Description), 192)
 		freeform := spec.Type == "custom"
 		if freeform {
 			description += "\nInput: raw string."
 		} else {
-			schema, _ := json.Marshal(spec.Parameters)
-			description += "\nInput JSON schema: " + string(schema)
+			description += "\nInput: object; use the direct tool declaration for its complete JSON schema."
 		}
 		defs = append(defs, codemode.ToolDefinition{Name: spec.Name, Description: description, Freeform: freeform})
-		if deferred[spec.Name] {
+	}
+	return &Catalog{definitions: defs}
+}
+
+func compactText(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	limit -= len("…")
+	for limit > 0 && text[limit]&0xc0 == 0x80 {
+		limit--
+	}
+	return text[:limit] + "…"
+}
+
+func (c *Catalog) project(deferred map[string]bool) ([]codemode.ToolDefinition, string) {
+	var b strings.Builder
+	omitted := false
+	for _, def := range c.definitions {
+		if deferred[def.Name] {
 			omitted = true
 			continue
 		}
-		fmt.Fprintf(&b, "\n\n### tools.%s\n%s", spec.Name, description)
+		fmt.Fprintf(&b, "\n\n### tools.%s\n%s", def.Name, def.Description)
 	}
 	if omitted {
 		b.WriteString("\n\nSome deferred nested tool declarations are omitted here. They are already available on tools and listed in ALL_TOOLS; filter ALL_TOOLS by name and description to find them. Search discovers schemas, not execution permissions. search_tool is a separate model tool, not a tools method.")
 	}
-	return defs, b.String()
+	return c.definitions, b.String()
 }
 
 type execTool struct {

@@ -501,6 +501,96 @@ func TestCapacityBlockedFollowupRemainsInterruptibleWithoutConsumingPriorResult(
 	}
 }
 
+func TestSubtreeContextOnlyCancelsObservationAndKeepsFence(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		controller := NewController()
+		defer controller.Close()
+		release := make(chan struct{})
+		cancelled := make(chan struct{})
+		child, err := controller.Start(t.Context(), Request{RootSessionID: "root", TaskPath: "/root/child", SessionID: "child"}, "", func(ctx context.Context, _, _ string) (Completion, error) {
+			<-ctx.Done()
+			close(cancelled)
+			<-release
+			return Completion{}, ctx.Err()
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), time.Hour)
+		defer cancel()
+		if _, err := controller.StopSubtreeContext(ctx, "child"); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("observer: %v", err)
+		}
+		<-cancelled
+		if _, err := controller.ReservePath("root", "/root/child/late"); err == nil {
+			t.Fatal("observer cancellation released fence")
+		}
+		if _, err := controller.QueueOrResume(t.Context(), child.TaskID, "late"); err == nil {
+			t.Fatal("followup crossed cleanup fence")
+		}
+		joined := make(chan error, 1)
+		go func() { _, err := controller.StopSubtree("child"); joined <- err }()
+		synctest.Wait()
+		select {
+		case err := <-joined:
+			t.Fatalf("shared cleanup finished early: %v", err)
+		default:
+		}
+		close(release)
+		if err := <-joined; err != nil {
+			t.Fatal(err)
+		}
+		free, err := controller.ReservePath("root", "/root/child/late")
+		if err != nil {
+			t.Fatalf("drained fence remained: %v", err)
+		}
+		free()
+	})
+}
+
+func TestReadyQueueRotatesTurnsWithinRoot(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		controller := NewController()
+		controller.SetMaxConcurrent(1)
+		defer controller.Close()
+		started := make(chan string, 8)
+		release := make(chan struct{}, 8)
+		run := func(ctx context.Context, _, prompt string) (Completion, error) {
+			if prompt != "" {
+				started <- prompt
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return Completion{}, ctx.Err()
+				}
+			}
+			return Completion{}, nil
+		}
+		first, err := controller.Start(t.Context(), Request{RootSessionID: "root"}, "", run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		second, err := controller.Start(t.Context(), Request{RootSessionID: "root"}, "", run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		for _, item := range []struct{ id, prompt string }{{first.TaskID, "a1"}, {first.TaskID, "a2"}, {second.TaskID, "b1"}, {second.TaskID, "b2"}, {first.TaskID, "a3"}} {
+			if _, err := controller.QueueOrResume(t.Context(), item.id, item.prompt); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, expected := range []string{"a1", "b1", "a2", "b2", "a3"} {
+			if got := <-started; got != expected {
+				t.Fatalf("turn fairness: got %q want %q", got, expected)
+			}
+			release <- struct{}{}
+			synctest.Wait()
+		}
+	})
+}
+
 func TestStopPendingWorkPreservesPriorGenerationCompletion(t *testing.T) {
 	for _, status := range []Status{Pending, Completed, Failed, Interrupted} {
 		t.Run(string(status), func(t *testing.T) {

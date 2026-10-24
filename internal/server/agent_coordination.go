@@ -69,7 +69,7 @@ func (s *Server) InterruptAgent(ctx context.Context, caller, target string) (age
 		return agent.View{}, fmt.Errorf("cannot interrupt root, self or an ancestor")
 	}
 	previous := agent.ViewSnapshot(snap)
-	_, err = s.agentTasks.StopSubtree(snap.SessionID)
+	_, err = s.agentTasks.StopSubtreeContext(ctx, snap.SessionID)
 	return previous, err
 }
 

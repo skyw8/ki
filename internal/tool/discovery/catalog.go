@@ -1,7 +1,10 @@
 package discovery
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -32,6 +35,7 @@ type entry struct {
 	name   string
 	tool   toolapi.Tool
 	raw    json.RawMessage
+	digest string
 	length int
 }
 
@@ -92,7 +96,8 @@ func New(tools []toolapi.Tool) *Catalog {
 		}
 		idx := len(c.entries)
 		c.byName[name] = idx
-		c.entries = append(c.entries, entry{name: name, tool: t, raw: raw, length: len(tokens)})
+		digest := sha256.Sum256(raw)
+		c.entries = append(c.entries, entry{name: name, tool: t, raw: raw, digest: hex.EncodeToString(digest[:]), length: len(tokens)})
 		for token, frequency := range frequencies {
 			c.index[token] = append(c.index[token], posting{index: idx, frequency: frequency})
 		}
@@ -223,13 +228,18 @@ func (*searchTool) Snippet() string {
 	return "Search tool metadata and disclose selected input schemas"
 }
 func (t *searchTool) Prompt() string {
-	return "Search deferred tool metadata with lexical BM25. Use query and optional limit (default 8, maximum 32). Returned schemas become available on the next model request. This discovers tools, not files or MCP resources, and does not grant execution permissions. Code Mode can already use allowed tools through tools and ALL_TOOLS. Sources:\n" + t.catalog.SourceSummary()
+	return "Search deferred tool metadata with lexical BM25 using query and optional limit (default 8, maximum 32). For a schema_pages match, call with name instead of query to fetch its complete tool declaration as JSON text fragments. Follow next_cursor with the same name until it is absent; concatenate fragments in byte-offset order. Only complete declarations become available on the next model request. name/cursor cannot be combined with query/limit. This discovers tools, not files or MCP resources, and does not grant execution permissions. Code Mode can already use allowed tools through tools and ALL_TOOLS. Sources:\n" + t.catalog.SourceSummary()
 }
 func (*searchTool) Parameters() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{
-		"query": map[string]any{"type": "string", "description": "Tool discovery query", "maxLength": maxQueryBytes},
-		"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": maxLimit},
-	}, "required": []any{"query"}, "additionalProperties": false}
+		"query":  map[string]any{"type": "string", "description": "Tool discovery query", "maxLength": maxQueryBytes},
+		"limit":  map[string]any{"type": "integer", "minimum": 1, "maximum": maxLimit},
+		"name":   map[string]any{"type": "string", "description": "Exact tool name whose full declaration should be fetched"},
+		"cursor": map[string]any{"type": "string", "description": "next_cursor from the previous declaration page"},
+	}, "oneOf": []any{
+		map[string]any{"required": []any{"query"}},
+		map[string]any{"required": []any{"name"}},
+	}, "additionalProperties": false}
 }
 
 func searchArgs(args map[string]any) (string, int, error) {
@@ -277,26 +287,29 @@ func searchArgs(args map[string]any) (string, int, error) {
 	return strings.TrimSpace(query), limit, nil
 }
 func (*searchTool) Validate(args map[string]any) error {
-	_, _, err := searchArgs(args)
+	_, err := parseRequest(args)
 	return err
 }
 
 func (t *searchTool) Execute(ctx context.Context, args map[string]any) toolapi.Result {
-	query, limit, err := searchArgs(args)
+	req, err := parseRequest(args)
 	if err != nil {
 		return toolapi.Result{IsError: true, Content: []types.Content{{Type: "text", Text: err.Error()}}}
 	}
 	if err := ctx.Err(); err != nil {
 		return toolapi.Result{IsError: true, Content: []types.Content{{Type: "text", Text: err.Error()}}}
 	}
-	matches := t.catalog.search(query, limit)
+	if req.name != "" {
+		return t.catalog.fetchPage(req)
+	}
+	matches := t.catalog.search(req.query, req.limit)
 	var tools []json.RawMessage
 	names := []string{}
-	omitted := []map[string]string{}
+	pages := []map[string]string{}
 	bytes := 0
 	for _, e := range matches {
 		if bytes+len(e.raw) > maxResultBytes-2048 {
-			omitted = append(omitted, map[string]string{"name": boundText(e.name, 128), "reason": "complete schema exceeds discovery output budget"})
+			pages = append(pages, map[string]string{"name": e.name})
 			continue
 		}
 		tools = append(tools, e.raw)
@@ -307,15 +320,18 @@ func (t *searchTool) Execute(ctx context.Context, args map[string]any) toolapi.R
 		tools = []json.RawMessage{}
 	}
 	body := map[string]any{"tools": tools}
-	if len(omitted) > 0 {
-		notice, _ := json.Marshal(omitted)
-		if len(notice) <= 1800 {
-			body["omitted_tools"] = omitted
-		} else {
-			body["omitted_tools"] = "Some matches omitted: complete schemas exceed discovery output budget."
-		}
+	if len(pages) > 0 {
+		body["schema_pages"] = pages
+		body["page_instruction"] = "Call search_tool with a name above, then follow next_cursor with the same name until it is absent to fetch the complete declaration."
 	}
 	raw, _ := json.Marshal(body)
+	for len(raw) > maxResultBytes && len(tools) > 0 {
+		last := len(tools) - 1
+		pages = append(pages, map[string]string{"name": names[last]})
+		tools, names = tools[:last], names[:last]
+		body["tools"], body["schema_pages"] = tools, pages
+		raw, _ = json.Marshal(body)
+	}
 	return toolapi.Result{Content: []types.Content{{Type: "text", Text: string(raw)}}, Details: map[string]any{"discovered_tools": names}}
 }
 
@@ -323,23 +339,26 @@ func (c *Catalog) Loaded(history []types.Message) []toolapi.Tool {
 	if c == nil {
 		return nil
 	}
-	pending := map[string]bool{}
+	pending := map[string]*discoveryRequest{}
 	seenCalls := map[string]bool{}
 	loaded := map[string]bool{}
+	pageOffsets := map[string]int{}
 	for _, message := range history {
 		if message.Role == "assistant" {
 			for _, call := range message.Content {
 				if call.Type != "toolCall" || call.ID == "" {
 					continue
 				}
-				pending[call.ID] = false
+				pending[call.ID] = nil
 				if seenCalls[call.ID] {
 					continue
 				}
 				seenCalls[call.ID] = true
 				if name, err := toolapi.Canonical(call.Name); err == nil && name == Name && message.StopReason != "error" {
-					_, _, err := searchArgs(call.Arguments)
-					pending[call.ID] = err == nil
+					req, err := parseRequest(call.Arguments)
+					if err == nil {
+						pending[call.ID] = &req
+					}
 				}
 			}
 			continue
@@ -347,30 +366,27 @@ func (c *Catalog) Loaded(history []types.Message) []toolapi.Tool {
 		if message.Role != "toolResult" {
 			continue
 		}
-		valid, exists := pending[message.ToolCallID]
+		req, exists := pending[message.ToolCallID]
 		delete(pending, message.ToolCallID)
 		name, err := toolapi.Canonical(message.ToolName)
-		if !exists || !valid || err != nil || name != Name || message.IsError {
+		if !exists || req == nil || err != nil || name != Name || message.IsError {
 			continue
 		}
-		raw, err := json.Marshal(message.Details)
-		if err != nil {
-			continue
-		}
-		var details struct {
-			Names []string `json:"discovered_tools"`
-		}
-		if json.Unmarshal(raw, &details) != nil || len(details.Names) > maxLimit {
-			continue
-		}
-		proven := c.disclosedSchemas(message.Text())
-		for _, requested := range details.Names {
-			name, err := toolapi.Canonical(requested)
-			if err == nil && proven[name] {
-				if _, exists := c.byName[name]; exists {
-					loaded[name] = true
+		if req.name != "" {
+			page, valid := c.disclosedPage(*req, message.Text())
+			if !valid {
+				continue
+			}
+			if page.Offset == 0 || pageOffsets[page.Name] == page.Offset {
+				pageOffsets[page.Name] = page.Offset + len(page.Fragment)
+				if pageOffsets[page.Name] == page.TotalBytes {
+					loaded[page.Name] = true
 				}
 			}
+			continue
+		}
+		for name := range c.disclosedSchemas(message.Text()) {
+			loaded[name] = true
 		}
 	}
 	names := make([]string, 0, len(loaded))
@@ -409,7 +425,11 @@ func (c *Catalog) disclosedSchemas(text string) map[string]bool {
 			continue
 		}
 		var actual, expected any
-		if json.Unmarshal(raw, &actual) == nil && json.Unmarshal(c.entries[index].raw, &expected) == nil && reflect.DeepEqual(actual, expected) {
+		actualDecoder := json.NewDecoder(bytes.NewReader(raw))
+		actualDecoder.UseNumber()
+		expectedDecoder := json.NewDecoder(bytes.NewReader(c.entries[index].raw))
+		expectedDecoder.UseNumber()
+		if actualDecoder.Decode(&actual) == nil && expectedDecoder.Decode(&expected) == nil && reflect.DeepEqual(actual, expected) {
 			proven[identity.Name] = true
 		}
 	}

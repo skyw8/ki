@@ -28,13 +28,16 @@ const (
 var ErrSessionBudget = errors.New("session tool output budget exhausted")
 
 type Config struct {
-	Root            string
-	PreviewBytes    int
-	PreviewLines    int
-	MaxFileBytes    int64
-	MaxSessionBytes int64
-	TTL             time.Duration
-	Now             func() time.Time
+	Root                   string
+	PreviewBytes           int
+	PreviewLines           int
+	MaxFileBytes           int64
+	MaxSessionBytes        int64
+	TTL                    time.Duration
+	Now                    func() time.Time
+	MaxProcessFileBytes    int64
+	MaxProcessSessionBytes int64
+	MaxProcessServiceBytes int64
 }
 
 type Reference struct {
@@ -60,8 +63,16 @@ type Store struct {
 	nowFn           func() time.Time
 	seq             atomic.Uint64
 
-	mu           sync.Mutex
-	sessionBytes map[string]int64
+	mu                    sync.Mutex
+	sessionBytes          map[string]int64
+	processBytes          map[string]int64
+	closedProcessSessions map[string]bool
+	processTotal          int64
+	processFileLimit      int64
+	processSessionLimit   int64
+	processServiceLimit   int64
+	processClosed         bool
+	processFiles          map[string]map[*processFile]struct{}
 }
 
 func New() (*Store, error) {
@@ -103,6 +114,11 @@ func NewWithConfig(cfg Config) (*Store, error) {
 		ttl:             cfg.TTL,
 		nowFn:           cfg.Now,
 		sessionBytes:    map[string]int64{},
+		processBytes:    map[string]int64{}, closedProcessSessions: map[string]bool{},
+		processFiles:        map[string]map[*processFile]struct{}{},
+		processFileLimit:    positiveLimit(cfg.MaxProcessFileBytes, DefaultMaxProcessFileBytes),
+		processSessionLimit: positiveLimit(cfg.MaxProcessSessionBytes, DefaultMaxProcessSessionBytes),
+		processServiceLimit: positiveLimit(cfg.MaxProcessServiceBytes, DefaultMaxProcessServiceBytes),
 	}
 	if err := os.MkdirAll(cfg.Root, 0o700); err != nil {
 		return nil, fmt.Errorf("create tool output root: %w", err)
@@ -165,7 +181,14 @@ func (s *Store) Close() error {
 	s.root = ""
 	s.mu.Lock()
 	s.sessionBytes = map[string]int64{}
+	s.processClosed = true
+	s.processBytes = map[string]int64{}
+	s.processTotal = 0
+	files := s.takeProcessFilesLocked("")
 	s.mu.Unlock()
+	for _, file := range files {
+		_ = file.Close()
+	}
 	return os.RemoveAll(root)
 }
 
@@ -175,7 +198,14 @@ func (s *Store) CloseSession(sessionID string) error {
 	}
 	s.mu.Lock()
 	delete(s.sessionBytes, sessionID)
+	s.processTotal -= s.processBytes[sessionID]
+	delete(s.processBytes, sessionID)
+	s.closedProcessSessions[sessionID] = true
+	files := s.takeProcessFilesLocked(sessionID)
 	s.mu.Unlock()
+	for _, file := range files {
+		_ = file.Close()
+	}
 	if s.root == "" {
 		return nil
 	}
@@ -273,7 +303,7 @@ func (s *Store) skip(toolName string, args map[string]any, details any) bool {
 		if err == nil {
 			var value any
 			if json.Unmarshal(raw, &value) == nil {
-				if hasStringKey(value, "output_file") || hasNumberKey(value, "next_offset") {
+				if hasStringKey(value, "output_file") || hasNumberKey(value, "next_offset") || hasNumberKey(value, "next_byte_offset") {
 					return true
 				}
 			}

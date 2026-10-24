@@ -52,6 +52,8 @@ func (t agentTool) Parameters() map[string]any {
 		properties["task_name"] = map[string]any{"type": "string", "description": "Child name using lowercase ASCII letters, digits and underscores.", "maxLength": 64}
 		properties["message"] = map[string]any{"type": "string", "description": "Self-contained initial task."}
 		properties["fork_turns"] = map[string]any{"type": "string", "description": "all (default), none, or a positive number of complete turns."}
+		properties["model"] = map[string]any{"type": "string", "description": "Optional provider/model reference; defaults to the parent model."}
+		properties["effort"] = map[string]any{"type": "string", "description": "Optional reasoning effort; defaults to the parent model setting."}
 	case catalog.SendMessage, catalog.FollowupTask:
 		required = []any{"target", "message"}
 		properties["target"] = map[string]any{"type": "string", "description": "Canonical or caller-relative agent task path."}
@@ -101,7 +103,7 @@ func (t agentTool) Execute(ctx context.Context, args map[string]any) toolapi.Res
 	var err error
 	switch t.name {
 	case catalog.SpawnAgent:
-		launch, e := t.runtime.SpawnAgent(ctx, agent.Request{TaskName: support.StringArg(args, "task_name", ""), Description: support.StringArg(args, "task_name", ""), Prompt: support.StringArg(args, "message", ""), ForkTurns: support.StringArg(args, "fork_turns", "all")})
+		launch, e := t.runtime.SpawnAgent(ctx, agent.Request{TaskName: support.StringArg(args, "task_name", ""), Description: support.StringArg(args, "task_name", ""), Prompt: support.StringArg(args, "message", ""), ForkTurns: support.StringArg(args, "fork_turns", "all"), Model: support.StringArg(args, "model", ""), ThinkingEffort: support.StringArg(args, "effort", "")})
 		err = e
 		value = map[string]any{"task_name": launch.TaskPath, "agent_id": launch.TaskID, "session_id": launch.SessionID}
 	case catalog.SendMessage, catalog.FollowupTask:

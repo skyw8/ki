@@ -2,7 +2,9 @@ package session
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +15,68 @@ import (
 
 	"ki/internal/types"
 )
+
+func BenchmarkForkHistory(b *testing.B) {
+	for _, count := range []int{100, 1000} {
+		b.Run(strconv.Itoa(count), func(b *testing.B) {
+			root := b.TempDir()
+			parent, err := Create(root, b.TempDir(), "provider", "model")
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer parent.Close()
+			for i := 0; i < count; i++ {
+				if _, err := parent.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "history entry " + strconv.Itoa(i)}}}); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				child, err := ForkHistoryAt(root, parent, parent.LeafID(), ForkModeTree)
+				if err != nil {
+					b.Fatal(err)
+				}
+				b.StopTimer()
+				dir := child.Dir
+				_ = child.Close()
+				if err := Remove(dir); err != nil {
+					b.Fatal(err)
+				}
+				b.StartTimer()
+			}
+		})
+	}
+}
+
+func TestForkHistoryContextCarriesOpaqueProvenanceAndCancels(t *testing.T) {
+	root := t.TempDir()
+	parent, err := Create(root, t.TempDir(), "provider", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parent.Close()
+	if _, err := parent.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "source"}}}); err != nil {
+		t.Fatal(err)
+	}
+	metadata := map[string]any{"agent_fork": map[string]any{"tool_handles_inherited": false}}
+	child, err := ForkHistoryAtContext(t.Context(), root, parent, parent.LeafID(), metadata, ForkModeTree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.Config.Metadata["agent_fork"] == nil || child.Config.CacheKey == "" {
+		t.Fatalf("provenance/cache: %+v %q", child.Config.Metadata, child.Config.CacheKey)
+	}
+	dir := child.Dir
+	_ = child.Close()
+	if err := Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := ForkHistoryAtContext(ctx, root, parent, parent.LeafID(), nil, ForkModeTree); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancel: %v", err)
+	}
+}
 
 func TestToolMessageDetailsRoundTrip(t *testing.T) {
 	cwd := t.TempDir()

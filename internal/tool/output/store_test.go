@@ -88,6 +88,10 @@ func TestNormalizeSkipsResultsThatAlreadyCarryAReference(t *testing.T) {
 	if _, ref := store.Normalize("session-1", "Read", nil, big, readDetails); ref != nil {
 		t.Fatalf("paged Read result was respilled: %+v", ref)
 	}
+	byteDetails := map[string]any{"truncation": map[string]any{"next_byte_offset": float64(51200)}}
+	if _, ref := store.Normalize("session-1", "Read", nil, big, byteDetails); ref != nil {
+		t.Fatalf("byte-paged Read result was respilled: %+v", ref)
+	}
 }
 
 func TestNormalizeSkipsReadOfOwnSpillFile(t *testing.T) {

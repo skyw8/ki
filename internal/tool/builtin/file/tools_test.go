@@ -239,8 +239,8 @@ func TestReadPagingAndImageResize(t *testing.T) {
 		t.Fatalf("line page: %+v", page)
 	}
 	params := read.Parameters()["properties"].(map[string]any)
-	if params["byte_offset"] != nil || params["byte_limit"] != nil {
-		t.Fatal("Read schema still exposes byte paging")
+	if params["byte_offset"] == nil || params["byte_limit"] != nil {
+		t.Fatal("Read schema must expose byte continuation without an unbounded byte limit")
 	}
 
 	imagePath := filepath.Join(cwd, "wide.png")

@@ -71,7 +71,6 @@ func TestContextEstimatesUseFullBodiesBeforePublicSlimming(t *testing.T) {
 func TestContextEstimatesKnownZeroAndUnknownPreview(t *testing.T) {
 	for _, entry := range []Entry{
 		{Type: "message", Message: &types.Message{Role: "user"}},
-		{Type: "message", Message: &types.Message{Role: "user", Content: []types.Content{{Type: "image", Data: "opaque"}}}},
 	} {
 		estimate := estimateContext(entry)
 		if estimate == nil || estimate.Message == nil || *estimate.Message != 0 {

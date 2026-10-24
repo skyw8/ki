@@ -112,7 +112,7 @@ GET/SSE 只显示 boundary 后历史，模型仍接收安全继承背景。公�
 `SetLeaf` 只切换 active leaf 并写 config，旧行不删。edit/regenerate 从指定 parent append
 sibling branch。
 
-fork：`ForkAt` 新建 session 目录，只写 root → target 路径；新 header 使用新 id，
+fork：`ForkAt` 新建 session 目录，只写 root → target 路径；历史批量写入时一次提交 JSONL 与最终 config，避免每条历史 entry 单独 fsync；新 header 使用新 id，
 `parentSession` 保存源 session id，`forkMode` 保存处理策略。`flat` child 与 parent 独立；
 `tree` child 由 server 在删除 parent 时递归清理。子 session 复制源的 `provider` / `model`
 / `thinkingEffort`，不回落到 registry 默认。

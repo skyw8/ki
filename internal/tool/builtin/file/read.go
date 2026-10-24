@@ -5,10 +5,9 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"fmt"
+	"io"
 	"os"
 	"strings"
-	"unicode/utf8"
 
 	toolapi "ki/internal/tool"
 	"ki/internal/tool/builtin/catalog"
@@ -25,9 +24,17 @@ type readTool struct {
 type ReadOperations interface {
 	Stat(context.Context, string) (os.FileInfo, error)
 	ReadFile(context.Context, string) ([]byte, error)
+	Open(context.Context, string) (io.ReadCloser, error)
 }
 
 type localReadOperations struct{}
+
+func (localReadOperations) Open(ctx context.Context, path string) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return os.Open(path)
+}
 
 func (localReadOperations) Stat(ctx context.Context, path string) (os.FileInfo, error) {
 	if err := ctx.Err(); err != nil {
@@ -52,13 +59,14 @@ func (localReadOperations) ReadFile(ctx context.Context, path string) ([]byte, e
 }
 
 type truncationDetails struct {
-	Truncated   bool   `json:"truncated"`
-	Reason      string `json:"reason,omitempty"`
-	TotalBytes  int    `json:"total_bytes"`
-	TotalLines  int    `json:"total_lines"`
-	OutputBytes int    `json:"output_bytes"`
-	OutputLines int    `json:"output_lines"`
-	NextOffset  int    `json:"next_offset,omitzero"`
+	Truncated      bool   `json:"truncated"`
+	Reason         string `json:"reason,omitempty"`
+	TotalBytes     int    `json:"total_bytes"`
+	TotalLines     int    `json:"total_lines"`
+	OutputBytes    int    `json:"output_bytes"`
+	OutputLines    int    `json:"output_lines"`
+	NextOffset     int    `json:"next_offset,omitzero"`
+	NextByteOffset *int64 `json:"next_byte_offset,omitempty"`
 }
 
 type readDetails struct {
@@ -79,7 +87,8 @@ Assume this tool is able to read all files on the machine. If the User provides 
 Usage:
 - The file_path parameter must be an absolute path, not a relative path
 - By default, it reads up to 2000 lines starting from the beginning of the file
-- You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters`
+- You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters
+- If a single line exceeds the page byte budget, continue with the returned next_byte_offset as byte_offset; this is a zero-based UTF-8 boundary and cannot be combined with offset`
 	if t.rich {
 		base += `
 - This tool allows reading images (eg PNG, JPG, etc).
@@ -92,9 +101,10 @@ Usage:
 
 func (t readTool) Parameters() map[string]any {
 	properties := map[string]any{
-		"file_path": map[string]any{"type": "string", "description": "The absolute path to the file to read"},
-		"offset":    map[string]any{"type": "integer", "description": "The line number to start reading from. Only provide if the file is too large to read at once"},
-		"limit":     map[string]any{"type": "integer", "description": "The number of lines to read. Only provide if the file is too large to read at once."},
+		"file_path":   map[string]any{"type": "string", "description": "The absolute path to the file to read"},
+		"offset":      map[string]any{"type": "integer", "description": "The line number to start reading from. Only provide if the file is too large to read at once"},
+		"byte_offset": map[string]any{"type": "integer", "minimum": 0, "description": "Zero-based raw byte position for continuing a byte-truncated line. Must be a UTF-8 boundary; do not combine with offset."},
+		"limit":       map[string]any{"type": "integer", "description": "The number of lines to read. Only provide if the file is too large to read at once."},
 	}
 	if t.rich {
 		properties["pages"] = map[string]any{"type": "string", "description": "Page range for PDF files (e.g., \"1-5\", \"3\", \"10-20\"). Only applicable to PDF files. Maximum 20 pages per request."}
@@ -135,6 +145,20 @@ func (t readTool) Execute(ctx context.Context, args map[string]any) toolapi.Resu
 		return support.Error("This tool can only read files, not directories. Use Glob.")
 	}
 
+	stream, err := ops.Open(ctx, abs)
+	if err != nil {
+		return readFailure(err)
+	}
+	defer stream.Close()
+	prefix := make([]byte, 16)
+	n, err := io.ReadFull(stream, prefix)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return readFailure(err)
+	}
+	prefix = prefix[:n]
+	if imageMIME(prefix) == "" && !bytes.HasPrefix(prefix, []byte("%PDF")) && !strings.HasSuffix(strings.ToLower(abs), ".ipynb") {
+		return readTextStream(ctx, io.MultiReader(bytes.NewReader(prefix), stream), args)
+	}
 	data, err := ops.ReadFile(ctx, abs)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -175,45 +199,5 @@ func (t readTool) Execute(ctx context.Context, args map[string]any) toolapi.Resu
 		text, note := truncateHead(text)
 		return support.Text(text + note)
 	}
-	text := string(data)
-	if !utf8.ValidString(text) {
-		return support.Error("binary file; cannot read as text")
-	}
-	lines := strings.Split(text, "\n")
-	off := 1
-	if v, ok := support.AsInt(args["offset"]); ok {
-		off = v
-		if off == 0 {
-			off = 1
-		}
-	}
-	start := max(off-1, 0)
-	if start >= len(lines) {
-		return support.Error(fmt.Sprintf("Offset %d is beyond end of file (%d lines total)", off, len(lines)))
-	}
-	end := len(lines)
-	if v, ok := support.AsInt(args["limit"]); ok && v > 0 {
-		if start+v < end {
-			end = start + v
-		}
-	}
-	selected := strings.Join(lines[start:end], "\n")
-	chunk, note := truncateHead(selected)
-	outputLines := strings.Count(chunk, "\n") + 1
-	d := &truncationDetails{TotalBytes: len(data), TotalLines: len(lines), OutputBytes: len(chunk), OutputLines: outputLines}
-	switch {
-	case note != "" && off > 1:
-		shown := outputLines
-		note = fmt.Sprintf("\n\n[Showing lines %d-%d of %d. Use offset=%d to continue.]", off, off+shown-1, len(lines), off+shown)
-		d.Truncated, d.Reason, d.NextOffset = true, "bytes_or_lines", off+shown
-	case end < len(lines) && note == "":
-		note = fmt.Sprintf("\n\n[%d more lines in file. Use offset=%d to continue.]", len(lines)-end, end+1)
-		d.Truncated, d.Reason, d.NextOffset = true, "limit", end+1
-	case note != "":
-		d.Truncated, d.Reason = true, "bytes_or_lines"
-		if outputLines < len(lines)-start {
-			d.NextOffset = off + outputLines
-		}
-	}
-	return toolapi.Result{Content: []types.Content{{Type: "text", Text: chunk + note}}, Details: readDetails{Truncation: d}}
+	return support.Error("unsupported file format")
 }

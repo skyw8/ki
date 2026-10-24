@@ -62,6 +62,12 @@ func TestAgentToolContextInheritanceDefault(t *testing.T) {
 	if runtime.request.ForkTurns != "none" {
 		t.Fatal("spawn_agent ignored fork_turns=none")
 	}
+	result = (agentTool{name: "spawn_agent", runtime: runtime}).Execute(context.Background(), map[string]any{
+		"task_name": "custom_child", "message": "Use another model.", "model": "vendor/model", "effort": "high",
+	})
+	if result.IsError || runtime.request.Model != "vendor/model" || runtime.request.ThinkingEffort != "high" {
+		t.Fatalf("spawn model settings: %+v %+v", result, runtime.request)
+	}
 }
 
 func TestAgentToolPromptExplainsContextInheritance(t *testing.T) {

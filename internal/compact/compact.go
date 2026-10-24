@@ -70,9 +70,6 @@ func estimateFromUsage(msgs []types.Message, recentCompaction int64) (int, bool)
 
 func EstimateModelContext(ctx types.ModelContext, recentCompaction int64) int {
 	if ctx.Portable {
-		if raw, err := json.Marshal(ctx.Messages); err == nil {
-			return (len(raw) + 3) / 4
-		}
 		return char4(ctx.Messages)
 	}
 	if ctx.Responses != nil {
@@ -83,7 +80,7 @@ func EstimateModelContext(ctx types.ModelContext, recentCompaction int64) int {
 	tokens := EstimateTokens(ctx.Messages, recentCompaction)
 	if ctx.Responses != nil {
 		for _, item := range ctx.Responses.Items {
-			tokens += (len(item) + 3) / 4
+			tokens += types.ResponseItemTokens(item)
 		}
 	}
 	return tokens
@@ -92,7 +89,7 @@ func EstimateModelContext(ctx types.ModelContext, recentCompaction int64) int {
 func trailingTokens(msgs []types.Message) int {
 	n := 0
 	for _, m := range msgs {
-		n += (len(m.Text()) + 3) / 4
+		n += types.MessageTokens(m)
 	}
 	return n
 }
@@ -100,7 +97,7 @@ func trailingTokens(msgs []types.Message) int {
 func char4(msgs []types.Message) int {
 	n := 0
 	for _, m := range msgs {
-		n += (len(m.Text()) + 3) / 4
+		n += types.MessageTokens(m)
 	}
 	return n
 }
@@ -209,7 +206,7 @@ func PrepareWithIntent(entries []session.Entry, cfg config.Compaction, intent In
 		if e.Type != "message" || e.Message == nil {
 			continue
 		}
-		acc += (len(e.Message.Text()) + 3) / 4
+		acc += types.MessageTokens(*e.Message)
 		if acc >= keep {
 			found := false
 			for _, c := range cutPoints {

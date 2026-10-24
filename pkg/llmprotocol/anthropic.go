@@ -336,8 +336,12 @@ func parseAnthropicSSE(event, data string, acc *Message) sseParseResult {
 		if index < 0 {
 			return sseParseResult{err: errAnthropicStopNoIndex}
 		}
-		if anthropicContentBlockAt(acc, index) == nil {
+		block := anthropicContentBlockAt(acc, index)
+		if block == nil {
 			return sseParseResult{err: fmt.Errorf("%w %d", errAnthropicStopUnknownIndex, index)}
+		}
+		if block.Type == "toolCall" {
+			return sseParseResult{emit: true, delta: AssistantDelta{Type: "toolcall_complete", ToolCallID: block.ID, ToolName: block.Name, Partial: *acc}}
 		}
 
 	case "message_delta":
