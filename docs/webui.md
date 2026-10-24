@@ -100,6 +100,28 @@ Markdown 用 Streamdown + remend 补全未闭合标记，`@streamdown/cjk` 处�
 GFM 表格自带、工具条复制为 Markdown；外观仍走 `.md` 设计 token，不用 Streamdown 自带的
 Tailwind/shadcn 外壳。
 
+链接与图片不走 Streamdown 默认的 `rehype-harden` 白名单：`docs/plan.md` 这类不带 `./` 前缀的
+相对路径会被它判成非法 URL 并渲染成 `文字 [blocked]`，而 `defaultOrigin` 又会把相对路径变成
+站内地址、点击后整页刷新回空会话。Ki 改为自己给 Streamdown 传 `rehypePlugins`
+（`features/markdown/rehype.ts`）：`rehype-raw` + `rehype-sanitize`，安全边界是 sanitize
+（`javascript:`、`file:`、`vbscript:` 的 `href`/`src` 直接剥掉，`data:` 图片同样剥掉），
+不再有任何 URL 被改写成标记文本。
+
+`features/markdown/links.tsx` 接管 `a` / `img`，用 `lib/localPath.ts` 把 href 分成四类：
+
+| href | 渲染 |
+|---|---|
+| `http(s):` / `mailto:` / `tel:` | `<a target="_blank">` |
+| `#fragment` | 页内锚点 |
+| 相对或主机绝对路径（`docs/x.md`、`./x`、`/abs/x:12`） | 解析成绝对路径后点开 `OutputPreview` |
+| `javascript:`、`file:`、无法解析 | 纯文字（无 href、无标记） |
+
+相对路径按当前会话 `cwd` 拼接，`#fragment`、`?query` 和 `:line[:column]` 后缀在解析前剥离；
+图片走 `GET /v1/fs?path=…&preview=1` 取 blob 再转 `blob:` URL（`<img src>` 带不上
+`Authorization`），失败显示 `md-local-image-missing` 而不是破图。`MarkdownLinkProvider` 由
+`App.tsx` 用会话 `cwd` 与 `OutputPreview` 的打开函数注入；没有 provider 的场合（扩展面板、
+旁聊等）本地链接退化成纯文字，不会触发导航。
+
 #### 工具行
 
 默认折叠，展开状态由 `ChatView` 按 row id 持有——虚拟列表在批次结算时重挂尾部行也不会丢失。

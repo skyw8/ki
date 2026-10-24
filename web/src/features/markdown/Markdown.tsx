@@ -8,6 +8,8 @@ import { recordStreamCommit, type DisplayRevision } from '../../lib/stream-metri
 import { copyText } from '../../lib/clipboard'
 import { queueMarkdown } from './parseQueue'
 import { useTranscriptRowMeasurement } from '../chat/TranscriptRow'
+import { MarkdownImage, MarkdownLink } from './links'
+import { markdownRehypePlugins } from './rehype'
 
 const plugins = { cjk }
 const linkSafety = { enabled: false }
@@ -121,12 +123,12 @@ function MdTable({ node: _node, children, ...rest }: MdProps<'table'>) {
   )
 }
 
-function MdA({ node: _node, href, children }: MdProps<'a'>) {
-  return <a href={href} target="_blank" rel="noreferrer">{children}</a>
+function MdA({ node: _node, href, title, children }: MdProps<'a'>) {
+  return <MarkdownLink href={href} title={title}>{children}</MarkdownLink>
 }
 
-function MdImg({ node: _node, alt, ...rest }: MdProps<'img'>) {
-  return <img alt={alt ?? ''} loading="lazy" decoding="async" {...rest} />
+function MdImg({ node: _node, alt, src, title, ...rest }: MdProps<'img'>) {
+  return <MarkdownImage alt={alt} src={src} title={title} {...rest} />
 }
 
 const BLOCK_CACHE_LIMIT = 300
@@ -257,6 +259,7 @@ const shared = {
   controls: false,
   lineNumbers: false,
   linkSafety,
+  rehypePlugins: markdownRehypePlugins,
   components,
 } as const
 

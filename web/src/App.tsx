@@ -23,6 +23,7 @@ import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEff
 import { clampCompactKeep, loadMessageView, saveMessageView, type MessageView } from './lib/messageView'
 import type { CatalogExtension, ChatNode, Content, ExtensionUI, Meta, ModelInfo, PushEvent, SearchHit, SessionInfo, WorkspaceInfo } from './api/types'
 import { ContextView } from './features/context/ContextView'
+import { MarkdownLinkProvider } from './features/markdown/links'
 import { useI18n } from './i18n/index'
 import { toast } from './components/toast'
 import { ExtensionInspector, localizedExtensionText, seedExtFields, statusChips, visibleStatusChips } from './features/settings/ExtensionPanel'
@@ -310,6 +311,8 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
 	const [edit, setEdit] = useState<{ messageId: string; parentId: string; draft: Draft } | null>(null)
 	const [attachmentTarget, setAttachmentTarget] = useState<'new' | 'edit' | null>(null)
 	const [previewPath, setPreviewPath] = useState<string | null>(null)
+	const openMarkdownFile = useCallback((target: { path: string }) => setPreviewPath(target.path), [])
+	const loadMarkdownFile = useCallback((path: string) => api.previewFS(path), [api])
 	const [uploading, setUploading] = useState(false)
   const [fileDragActive, setFileDragActive] = useState(false)
   const [models, setModels] = useState<ModelInfo[]>([])
@@ -1588,6 +1591,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   }, [currentId, forest])
 
   return (
+    <MarkdownLinkProvider cwd={view.cwd} openFile={openMarkdownFile} loadFile={loadMarkdownFile}>
     <div className={`app${collapsed && !compactLayout ? ' sidebar-collapsed' : ''}${mobileSidebarOpen ? ' mobile-sidebar-open' : ''}${(settingsOpen || modelOpen || dirOpen || attachmentTarget || extOpen) ? ' modal-open' : ''}`}>
 	  {fileDragActive ? createPortal(<div className="global-drop-overlay" data-testid="global-drop-overlay">
 		<div className="global-drop-visual"><span><IImage /></span><span><IFile /></span><span><IPlus /></span></div>
@@ -2285,5 +2289,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
         </Modal>
       ) : null}
     </div>
+    </MarkdownLinkProvider>
   )
 }
