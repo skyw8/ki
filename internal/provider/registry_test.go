@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -362,6 +363,347 @@ func TestRegistryMigratedVersionKeepsStrictFields(t *testing.T) {
 	}
 	if _, err := NewRegistry(home); err == nil {
 		t.Fatal("unknown field must still fail after migration")
+	}
+}
+
+func syncedRegistryModel(t *testing.T, r *Registry, providerID, modelID string) Model {
+	t.Helper()
+	for _, p := range r.Providers() {
+		if p.ID == providerID {
+			for _, model := range p.Models {
+				if model.ID == modelID {
+					return model
+				}
+			}
+		}
+	}
+	t.Fatalf("missing model %s/%s", providerID, modelID)
+	return Model{}
+}
+
+func TestSyncModelsPreservesManualModelsAndPrunesOnlySyncedOrphans(t *testing.T) {
+	for _, id := range []string{"local", "openrouter"} {
+		t.Run(id, func(t *testing.T) {
+			home := t.TempDir()
+			r, err := NewRegistry(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manual := ModelSeed{ID: "collision", Name: "Manual model", Enabled: modelMetadataPointer(false), ContextWindow: 120000, MaxTokens: 16000, Input: []string{"text", "image"}, Reasoning: modelMetadataPointer(true), ThinkingLevelMap: map[string]*string{"high": modelMetadataPointer("high")}, Cost: &Cost{CostRates: CostRates{Input: 2, Output: 8}}, Compat: Compat{SupportsReasoningEffort: true}}
+			if err := r.Update(func(cfg *ModelsFile) error {
+				pc := Config{
+					Name: "Catalog", API: "completions", BaseURL: "https://models.example/v1",
+					Models:       []ModelSeed{manual, {ID: "manual-only"}, {ID: "retired"}, {ID: "kept"}},
+					SyncedModels: []string{"retired", "kept"},
+					ModelOverrides: map[string]ModelOverride{
+						"collision":   {MaxTokens: modelMetadataPointer(14000)},
+						"manual-only": {Name: modelMetadataPointer("Manual override")},
+						"retired":     {Enabled: modelMetadataPointer(false)},
+						"kept":        {Enabled: modelMetadataPointer(false)},
+					},
+				}
+				if id == "openrouter" {
+					pc.ModelOverrides["free"] = ModelOverride{Name: modelMetadataPointer("Builtin override"), Enabled: modelMetadataPointer(false)}
+				}
+				cfg.Providers[id] = pc
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			key := "secret"
+			if err := r.SetCredential(id, &key); err != nil {
+				t.Fatal(err)
+			}
+			before := syncedRegistryModel(t, r, id, "collision")
+			incoming := []ModelSeed{{ID: "collision", Name: "Upstream collision", ContextWindow: 32000}, {ID: "kept", Name: "Updated"}, {ID: "new"}}
+			if err := r.SyncModelsIfCurrent(id, "completions", "https://models.example/v1", key, incoming); err != nil {
+				t.Fatal(err)
+			}
+			pc := r.UserConfig().Providers[id]
+			if !reflect.DeepEqual(pc.Models[0], manual) || !reflect.DeepEqual(pc.SyncedModels, []string{"kept", "new"}) {
+				t.Fatalf("manual ownership lost: %+v", pc)
+			}
+			if _, exists := pc.ModelOverrides["retired"]; exists {
+				t.Fatal("retired synced override retained")
+			}
+			for _, modelID := range []string{"collision", "manual-only", "kept"} {
+				if _, exists := pc.ModelOverrides[modelID]; !exists {
+					t.Fatalf("override %q was removed", modelID)
+				}
+			}
+			after := syncedRegistryModel(t, r, id, "collision")
+			if !reflect.DeepEqual(after, before) {
+				t.Fatalf("manual collision changed:\ngot %+v\nwant %+v", after, before)
+			}
+			if id == "openrouter" {
+				builtin := syncedRegistryModel(t, r, id, "free")
+				if builtin.Name != "Builtin override" || builtin.Enabled {
+					t.Fatalf("unsynced builtin override lost: %+v", builtin)
+				}
+			}
+			if err := r.SyncModelsIfCurrent(id, "completions", "https://models.example/v1", key, nil); err != nil {
+				t.Fatal(err)
+			}
+			pc = r.UserConfig().Providers[id]
+			wantOverrides := 2
+			if id == "openrouter" {
+				wantOverrides++
+			}
+			if len(pc.Models) != 2 || len(pc.SyncedModels) != 0 || len(pc.ModelOverrides) != wantOverrides {
+				t.Fatalf("empty refresh removed manual metadata: %+v", pc)
+			}
+			if _, err := NewRegistry(home); err != nil {
+				t.Fatalf("synced catalog failed reload: %v", err)
+			}
+		})
+	}
+}
+
+func TestSyncModelsPreservesInheritedAndPerModelEndpoints(t *testing.T) {
+	r, err := NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Update(func(cfg *ModelsFile) error {
+		cfg.Providers["local"] = Config{
+			Name: "Local", API: "completions", BaseURL: "https://models.example/v1",
+			Models:         []ModelSeed{{ID: "inherited"}, {ID: "custom", API: "responses", BaseURL: "https://custom.example/v1"}},
+			SyncedModels:   []string{"inherited", "custom"},
+			ModelOverrides: map[string]ModelOverride{"custom": {Enabled: modelMetadataPointer(false)}},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	key := "secret"
+	if err := r.SetCredential("local", &key); err != nil {
+		t.Fatal(err)
+	}
+	p, _, _, err := r.ProviderCredential("local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := ParseProviderModels([]byte(`{"data":[{"id":"inherited"},{"id":"custom"}]}`), p.Models)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SyncModelsIfCurrent(p.ID, p.API, p.BaseURL, key, models); err != nil {
+		t.Fatal(err)
+	}
+	seeds := r.UserConfig().Providers[p.ID].Models
+	if seeds[0].API != "" || seeds[0].BaseURL != "" || seeds[1].API != "responses" || seeds[1].BaseURL != "https://custom.example/v1" {
+		t.Fatalf("endpoint inheritance = %+v", seeds)
+	}
+	if err := r.Update(func(cfg *ModelsFile) error {
+		pc := cfg.Providers[p.ID]
+		pc.API, pc.BaseURL = "anthropic", "https://changed.example/v1"
+		cfg.Providers[p.ID] = pc
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inherited := syncedRegistryModel(t, r, p.ID, "inherited")
+	custom := syncedRegistryModel(t, r, p.ID, "custom")
+	if inherited.API != "anthropic" || inherited.BaseURL != "https://changed.example/v1" || custom.API != "responses" || custom.BaseURL != "https://custom.example/v1" || custom.Enabled {
+		t.Fatalf("endpoint update = inherited %+v custom %+v", inherited, custom)
+	}
+}
+
+func TestSyncModelsPreservesBuiltinOverrideAfterSyncedShadowLeaves(t *testing.T) {
+	r, err := NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Update(func(cfg *ModelsFile) error {
+		cfg.Providers["openrouter"] = Config{
+			Models: []ModelSeed{{ID: "free", Name: "Synced shadow"}}, SyncedModels: []string{"free"},
+			ModelOverrides: map[string]ModelOverride{"free": {Name: modelMetadataPointer("Keep override")}},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	key := "secret"
+	if err := r.SetCredential("openrouter", &key); err != nil {
+		t.Fatal(err)
+	}
+	p, _, _, err := r.ProviderCredential("openrouter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SyncModelsIfCurrent(p.ID, p.API, p.BaseURL, key, []ModelSeed{{ID: "free", Name: "Remote shadow"}}); err != nil {
+		t.Fatal(err)
+	}
+	pc := r.UserConfig().Providers[p.ID]
+	if len(pc.Models) != 0 || len(pc.SyncedModels) != 0 {
+		t.Fatalf("model adopted by builtin still tracked as synced: %+v", pc)
+	}
+	_, model, ok := r.FindModel("openrouter", "free")
+	if !ok || !model.Builtin || model.Name != "Keep override" {
+		t.Fatalf("builtin fallback override = %+v", model)
+	}
+}
+
+func TestModelCatalogSnapshotDoesNotBakeOverridesIntoSyncedSeeds(t *testing.T) {
+	r, err := NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := ModelSeed{
+		ID: "discovered", Name: "Baseline", ContextWindow: 100000, MaxTokens: 12000,
+		Input: []string{"text", "image"}, Reasoning: modelMetadataPointer(true),
+		ThinkingLevelMap: map[string]*string{"high": modelMetadataPointer("high")},
+		Cost:             &Cost{CostRates: CostRates{Input: 2, Output: 8}}, Compat: Compat{SupportsReasoningEffort: true},
+	}
+	if err := r.Update(func(cfg *ModelsFile) error {
+		cfg.Providers["openrouter"] = Config{
+			Models: []ModelSeed{baseline}, SyncedModels: []string{baseline.ID},
+			ModelOverrides: map[string]ModelOverride{
+				baseline.ID: {Name: modelMetadataPointer("Old override"), Enabled: modelMetadataPointer(false), Input: modelMetadataPointer([]string{"text"}), Reasoning: modelMetadataPointer(false), Cost: json.RawMessage(`null`)},
+				"free":      {Name: modelMetadataPointer("Builtin local name"), Enabled: modelMetadataPointer(false)},
+			},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	key := "secret"
+	if err := r.SetCredential("openrouter", &key); err != nil {
+		t.Fatal(err)
+	}
+	current, credential, status, err := r.ProviderModelCatalogCredential("openrouter")
+	if err != nil || credential.APIKey != key || !status.Configured {
+		t.Fatalf("catalog snapshot credential = %+v %+v %v", credential, status, err)
+	}
+	var existing Model
+	for _, model := range current.Models {
+		if model.ID == baseline.ID {
+			existing = model
+		}
+	}
+	if existing.Name != baseline.Name || !existing.Enabled || !existing.Reasoning || !slices.Contains(existing.Input, "image") || existing.Cost == nil || existing.Cost.Input != 2 {
+		t.Fatalf("snapshot included local overrides: %+v", existing)
+	}
+	seeds, err := ParseProviderModels([]byte(`{"data":[{"id":"free"},{"id":"discovered"}]}`), current.Models)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Update(func(cfg *ModelsFile) error {
+		pc := cfg.Providers[current.ID]
+		pc.ModelOverrides[baseline.ID] = ModelOverride{Name: modelMetadataPointer("Concurrent override")}
+		cfg.Providers[current.ID] = pc
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SyncModelsIfCurrent(current.ID, current.API, current.BaseURL, key, seeds); err != nil {
+		t.Fatal(err)
+	}
+	model := syncedRegistryModel(t, r, current.ID, baseline.ID)
+	if model.Name != "Concurrent override" || !model.Enabled || !model.Reasoning || !slices.Contains(model.Input, "image") || model.Cost == nil || model.Cost.Input != 2 {
+		t.Fatalf("concurrent override replacement retained stale fields: %+v", model)
+	}
+	builtin := syncedRegistryModel(t, r, current.ID, "free")
+	if !builtin.Builtin || builtin.Name != "Builtin local name" || builtin.Enabled {
+		t.Fatalf("builtin restore identity lost: %+v", builtin)
+	}
+	pc := r.UserConfig().Providers[current.ID]
+	if len(pc.Models) != 1 || !reflect.DeepEqual(pc.SyncedModels, []string{baseline.ID}) {
+		t.Fatalf("builtin model was imported as synced: %+v", pc)
+	}
+	current, _, _, err = r.ProviderModelCatalogCredential("openrouter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeds, err = ParseProviderModels([]byte(`{"data":[{"id":"free"},{"id":"discovered"}]}`), current.Models)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Update(func(cfg *ModelsFile) error {
+		pc := cfg.Providers[current.ID]
+		pc.ModelOverrides = nil
+		cfg.Providers[current.ID] = pc
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SyncModelsIfCurrent(current.ID, current.API, current.BaseURL, key, seeds); err != nil {
+		t.Fatal(err)
+	}
+	model = syncedRegistryModel(t, r, current.ID, baseline.ID)
+	if model.Name != baseline.Name || !model.Enabled || !model.Reasoning || !slices.Contains(model.Input, "image") || model.Cost == nil || model.Cost.Input != 2 {
+		t.Fatalf("deleted override reappeared from snapshot: %+v", model)
+	}
+	builtin = syncedRegistryModel(t, r, current.ID, "free")
+	if !builtin.Builtin || !builtin.Enabled || builtin.Name == "Builtin local name" {
+		t.Fatalf("builtin restore did not recover embedded metadata: %+v", builtin)
+	}
+}
+
+func TestSyncModelsRejectsStaleConfigurationAndInvalidCatalogs(t *testing.T) {
+	for _, change := range []string{"api", "base", "key", "extension", "empty", "duplicate", "blank"} {
+		t.Run(change, func(t *testing.T) {
+			r, err := NewRegistry(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := r.Update(func(cfg *ModelsFile) error {
+				cfg.Providers["local"] = Config{Name: "Local", API: "completions", BaseURL: "https://models.example/v1", Models: []ModelSeed{{ID: "old"}}, SyncedModels: []string{"old"}}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			key := "secret"
+			if err := r.SetCredential("local", &key); err != nil {
+				t.Fatal(err)
+			}
+			p, _, _, err := r.ProviderCredential("local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			models := []ModelSeed{{ID: "new"}}
+			want := ErrProviderConfigChanged
+			switch change {
+			case "api", "base":
+				err = r.Update(func(cfg *ModelsFile) error {
+					pc := cfg.Providers[p.ID]
+					if change == "api" {
+						pc.API = "anthropic"
+					} else {
+						pc.BaseURL = "https://changed.example/v1"
+					}
+					cfg.Providers[p.ID] = pc
+					return nil
+				})
+			case "key":
+				changed := "changed"
+				err = r.SetCredential(p.ID, &changed)
+			case "extension":
+				err = r.Update(func(cfg *ModelsFile) error { delete(cfg.Providers, p.ID); return nil })
+				if err == nil {
+					err = r.ReplaceExtensionProviders([]ExtensionProviderSpec{{ID: p.ID, Name: "Extension", API: p.API, BaseURL: p.BaseURL, Models: []ModelSeed{{ID: "extension"}}}})
+				}
+				if err == nil {
+					err = r.SetCredential(p.ID, &key)
+				}
+			case "empty":
+				models, want = nil, errAtLeastOneModel
+			case "duplicate":
+				models, want = []ModelSeed{{ID: "same"}, {ID: "same"}}, errDuplicateModel
+			case "blank":
+				models, want = []ModelSeed{{ID: " "}}, errModelIDRequired
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := r.UserConfig()
+			if err := r.SyncModelsIfCurrent(p.ID, p.API, p.BaseURL, key, models); !errors.Is(err, want) {
+				t.Fatalf("sync error = %v, want %v", err, want)
+			}
+			if !reflect.DeepEqual(before, r.UserConfig()) {
+				t.Fatal("rejected sync mutated registry")
+			}
+		})
 	}
 }
 

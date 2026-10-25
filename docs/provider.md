@@ -49,8 +49,8 @@ block index 独立累积，保留 thinking signature 和 redacted-thinking data�
 
 `catalog.json` 随二进制嵌入，内置 OpenRouter（默认模型 `openrouter/free`）、OpenAI、
 Anthropic、DeepSeek、DashScope、Z.AI、Moonshot、MiniMax、Google、xAI 和 Magpie；
-DashScope、Z.AI、Moonshot、MiniMax 另有 `-cn` provider。除 Magpie 外，目录随 Ki 发版
-更新，不调用供应商模型列表 API。
+DashScope、Z.AI、Moonshot、MiniMax 另有 `-cn` provider。目录随 Ki 发版更新；设置页的
+Fetch models 可显式获取内置和自定义 provider 的模型列表，读取本地目录和普通请求不会自动联网刷新。
 
 ### 用户配置
 
@@ -74,9 +74,45 @@ API / Base URL。Google 使用官方 OpenAI-compatible 入口。扩展 provider 
 只是可选偏好；缺失、被删除或被禁用时自动使用第一个启用模型。
 
 配置入口是 `GET/POST/PATCH/DELETE /v1/providers` 及其 `/credential`、`/models` 子资源；
-Magpie 显式同步使用受保护的 `POST /v1/providers/magpie/models/refresh`。创建会话、改模型或
+显式同步使用受保护的 `POST /v1/providers/{id}/models/refresh`，extension provider 的目录仍由
+扩展管理，不允许此接口写入。创建会话、改模型或
 发 prompt 会把当前模型记进 `models.json` 的 last-used；`PUT /v1/default-model` 仍可显式
 写入同一字段。`GET /v1/models` 是同一 registry 的扁平可选视图，不存在第二份目录。
+
+### 显式获取模型列表
+
+Fetch models 使用已保存的连接与 API key，由 Ki server 请求上游；浏览器只调用同源接口。
+Completions / Responses 在配置的 base URL 下请求 `/models` 并使用 Bearer；Anthropic 在
+base 下请求 `/v1/models`（已有 `/v1` 不重复），使用 `x-api-key` 和当前 `anthropic-version`。
+遇到 `has_more` 时继续跟随游标，空或重复游标、任意页失败及重复模型 ID 都中止整次同步。
+
+| 供应商 | 获取方式 |
+|---|---|
+| OpenAI、OpenRouter、DeepSeek、Moonshot、xAI 和兼容自定义端点 | base URL + `/models`；OpenRouter 不传 offset/limit 时返回完整目录 |
+| Google | 保留官方 OpenAI 兼容入口 `/v1beta/openai/models`，不切换推理 base URL |
+| Anthropic、MiniMax | `/v1/models` 或 `/anthropic/v1/models`，按 `last_id` / `after_id` 分页 |
+| DashScope 官方兼容入口（含使用任意自定义 provider ID 的连接） | 同 host 的 `/api/v1/models`，用 `page_no` / `page_size` 和 `output.total` 取齐；请求文本生成和推理类别 |
+| Z.AI Coding 等没有公开列表契约的端点 | 尝试当前 base 的标准 `/models`，不切换订阅或付费端点；失败保留现有目录 |
+
+新发现和已同步模型会导入列表提供的名称、上下文、输出限制、图片输入和明确推理等级；
+缺少的字段沿用同 ID 模型基线，避免 OpenAI 等仅返回 ID 的目录抹掉已知能力。内置同 ID
+条目保留 Ki 版本基线和独立覆盖，不转成同步模型；请求快照剥离用户覆盖，避免把覆盖固化。新模型缺少限制时使用 32K
+context / 4096 output、text 输入和未知价格；列表中的 ID 不保证兼容当前聊天协议，仍可在
+模型设置中禁用或编辑。不根据模型名称猜测能力，不把未知价格当免费。
+
+同步仅替换先前同步的模型，保留手动模型（包括与上游同 ID 的配置）、内置目录及仍匹配的
+逐模型覆盖。仅移除已退出同步且无其他模型承接的孤立覆盖。`syncedModels` 记录同步来源，
+不改变 state version。请求开始时快照协议、连接和凭据；写入前在 registry 锁内重查，变化时
+返回 409，失败不改目录。继承 provider 连接的模型不会把当时的地址固化为独立覆盖。
+请求禁止重定向，整体限时 20 秒、最多 100 页、响应累计最多 16 MiB。
+
+官方契约参考：[OpenAI](https://developers.openai.com/api/reference/resources/models/methods/list)、
+[Anthropic](https://platform.claude.com/docs/en/api/models/list)、
+[OpenRouter](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)、
+[DeepSeek](https://api-docs.deepseek.com/api/list-models)、
+[Gemini](https://ai.google.dev/gemini-api/docs/openai)、
+[MiniMax](https://platform.minimax.io/docs/api-reference/models/anthropic/list-models)、
+[DashScope](https://www.alibabacloud.com/help/en/model-studio/list-models)。
 
 ### Magpie
 

@@ -907,6 +907,28 @@ func (r *Registry) ProviderCredential(id string) (Provider, Credential, Credenti
 	return cloneProvider(p), credential, status, nil
 }
 
+func (r *Registry) ProviderModelCatalogCredential(id string) (Provider, Credential, CredentialStatus, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, ok := r.providerLocked(id)
+	if !ok {
+		return Provider{}, Credential{}, CredentialStatus{}, fmt.Errorf("provider %q: %w", id, errProviderNotFound)
+	}
+	credential, status := r.credentialLocked(p)
+	if pc, customized := r.state.user.Providers[id]; customized && len(pc.ModelOverrides) > 0 {
+		next := cloneModelsFile(r.state.user)
+		pc = next.Providers[id]
+		pc.ModelOverrides = nil
+		next.Providers[id] = pc
+		baseline, err := buildRegistryState(next, r.state.creds)
+		if err != nil {
+			return Provider{}, Credential{}, CredentialStatus{}, err
+		}
+		p = baseline.providers[id]
+	}
+	return cloneProvider(p), credential, status, nil
+}
+
 func (r *Registry) credentialLocked(p Provider) (Credential, CredentialStatus) {
 	if p.Auth.Type == AuthNone {
 		return Credential{Type: AuthNone}, CredentialStatus{Configured: true, Source: "none", Type: AuthNone}
@@ -978,15 +1000,18 @@ func (r *Registry) Update(mut func(*ModelsFile) error) error {
 	return r.persistModelsLocked(next)
 }
 
-func (r *Registry) SyncModelsIfCurrent(id, baseURL, apiKey string, models []ModelSeed) error {
+func (r *Registry) SyncModelsIfCurrent(id, api, baseURL, apiKey string, models []ModelSeed) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	p, ok := r.providerLocked(id)
 	if !ok {
 		return fmt.Errorf("provider %q: %w", id, errProviderNotFound)
 	}
+	if _, extension := r.extensionProviders[id]; extension {
+		return ErrProviderConfigChanged
+	}
 	credential, status := r.credentialLocked(p)
-	if p.BaseURL != baseURL || !status.Configured || credential.APIKey != apiKey {
+	if p.API != api || p.BaseURL != baseURL || !status.Configured || credential.APIKey != apiKey {
 		return ErrProviderConfigChanged
 	}
 
@@ -996,24 +1021,56 @@ func (r *Registry) SyncModelsIfCurrent(id, baseURL, apiKey string, models []Mode
 	for _, modelID := range pc.SyncedModels {
 		previouslySynced[modelID] = true
 	}
+	manual := make(map[string]bool, len(pc.Models))
+	var seeds []ModelSeed
+	for _, model := range pc.Models {
+		if !previouslySynced[model.ID] {
+			seeds = append(seeds, model)
+			manual[model.ID] = true
+		}
+	}
+	builtinIDs := map[string]bool{}
+	for _, builtin := range BuiltinProviders() {
+		if builtin.ID == id {
+			for _, model := range builtin.Models {
+				builtinIDs[model.ID] = true
+			}
+			break
+		}
+	}
 	incoming := make(map[string]bool, len(models))
 	var syncedIDs []string
 	for _, model := range models {
+		if strings.TrimSpace(model.ID) == "" {
+			return fmt.Errorf("provider %q: %w", id, errModelIDRequired)
+		}
+		if incoming[model.ID] {
+			return fmt.Errorf("provider %q: %w %q", id, errDuplicateModel, model.ID)
+		}
 		incoming[model.ID] = true
+		if manual[model.ID] || builtinIDs[model.ID] {
+			continue
+		}
+		if model.API == api {
+			model.API = ""
+		}
+		if model.BaseURL == baseURL {
+			model.BaseURL = ""
+		}
+		seeds = append(seeds, model)
 		syncedIDs = append(syncedIDs, model.ID)
 	}
-
-	seeds := append([]ModelSeed(nil), models...)
-	for _, model := range pc.Models {
-		if !previouslySynced[model.ID] && !incoming[model.ID] {
-			seeds = append(seeds, model)
-			incoming[model.ID] = true
-		}
+	retained := make(map[string]bool, len(seeds))
+	for _, model := range seeds {
+		retained[model.ID] = true
+	}
+	for modelID := range builtinIDs {
+		retained[modelID] = true
 	}
 	pc.Models = seeds
 	pc.SyncedModels = syncedIDs
 	for modelID := range pc.ModelOverrides {
-		if !incoming[modelID] {
+		if previouslySynced[modelID] && !retained[modelID] {
 			delete(pc.ModelOverrides, modelID)
 		}
 	}
