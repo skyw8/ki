@@ -517,7 +517,10 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
     if (!page || !SETTINGS_PAGES.includes(page)) return
     event.preventDefault()
     setSettingsPage(page)
-    window.requestAnimationFrame(() => tabs[next]?.focus({ preventScroll: false }))
+    window.requestAnimationFrame(() => {
+      tabs[next]?.focus({ preventScroll: true })
+      tabs[next]?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    })
   }
 
   useEffect(() => {

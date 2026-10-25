@@ -344,7 +344,7 @@ workspace-scoped `/v1/commands` 预加载内置、prompt template 和 skill 命�
 
 ### 设置
 
-设置页签顺序为「模型供应商」「Skills」「Tools」「MCP」「Extensions」「System Prompt」
+设置页签顺序为「供应商 / Providers」「Skills」「Tools」「MCP」「Extensions」「System Prompt」
 「Message」「通知」「主题和语言」「关于」。
 
 #### 关于
@@ -473,11 +473,16 @@ schema 也一样）；停用的扩展没有 Configure，避免打开空的或不
 `models.json`，thinking 只保留在会话与当前标签页 composer。冷启动采用服务端默认，再回退到
 当前目录首项，不读取浏览器旧模型记录。页签和主按钮与对话页同一套 tab / 主按钮样式。
 
-供应商页的外层不滚动，左侧供应商列表只显示名称，有凭据且启用的排在前面，与右侧连接、
-凭据、模型编辑区分别独立滚动，新增供应商和使用「编辑」打开的模型高级 JSON 都用二级弹窗。
-模型高级 JSON 编辑保留 `input` 等能力字段。供应商目录通常只在本机维护；Magpie 支持设置页
-显式刷新，浏览器经同源 Ki API 请求，由服务端读取 Magpie 目录，不直接向浏览器暴露 provider
-key。Base URL、API 协议等表单控件共享尺寸和排版；API 协议与 thinking effort 共用 ARIA
+供应商页的外层不滚动，不重复放置页面标题和说明行。Add provider 固定在左侧供应商导航顶部；
+手机上固定在横向导航左侧，供应商名称列表独立滚动，切换时不会卷走创建入口。有凭据且启用的
+供应商排在前面，右侧连接、凭据、模型编辑区独立滚动。新增供应商和使用「编辑」打开的模型
+高级 JSON 都用二级弹窗，保留 `input` 等能力字段。
+
+Fetch models 与 Add model 并排放在模型区标题右侧，使用同一套按钮样式，不再提供 Magpie
+专属同步卡片。所有非 extension provider 均可尝试获取，按钮显示加载状态且保存期间禁用；
+成功后更新列表，失败显示错误并保留原模型。浏览器经同源 Ki API 请求，服务端使用已保存的
+连接与凭据获取目录，provider key 不回传浏览器。协议、分页和同步规则见 [provider.md](provider.md)。
+Base URL、API 协议等表单控件共享尺寸和排版；API 协议与 thinking effort 共用 ARIA
 combobox/listbox 组件，支持方向键、Enter、Escape，并按可用空间向上或向下展开。
 
 #### 扩展 OAuth

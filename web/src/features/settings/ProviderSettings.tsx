@@ -20,11 +20,11 @@ const apiOptions = [
 
 const copy = {
   zh: {
-    title: '模型供应商', subtitle: '管理连接、凭据和模型。除 Magpie 外，目录保存在本地且不会自动联网刷新。', addProvider: '添加供应商',
+    addProvider: '添加供应商',
     providers: '供应商', missingKey: '缺少密钥', builtIn: '内置', custom: '自定义', extension: '扩展', enabled: '启用', disabled: '已停用',
     connection: '连接设置', connectionHint: '修改连接后，新请求会立即使用新配置。', magpieConnectionHint: '填写 Ki 服务端可访问的 Magpie 地址：Completions 通常以 /v1 结尾，Anthropic 使用根地址；刷新目录会自动请求 /v1/models。', displayName: '显示名称', providerID: '供应商 ID', baseURL: 'Base URL', apiProtocol: 'API 协议', saveChanges: '保存更改',
     credential: 'API 凭据', credentialHint: '密钥只保存在本机，页面不会回显。', magpieCredentialHint: '本机 Magpie 接受任意 key，推荐 magpie-ki 以便统计用量；远端网关请填写 Magpie gateway key。', apiKey: 'API key', saveKey: '保存密钥', clear: '清除', stored: '已保存凭据', extensionCredentialHint: '凭据由 provider 扩展管理；OAuth 登录由扩展处理，access token 不会显示在页面。', noCredential: '此 provider 不需要凭据。', login: '登录', browserLogin: '浏览器登录', deviceLogin: '设备码登录', logout: '退出登录', copy: '复制', copied: '已复制', authPending: '等待完成 OAuth 登录…', authDeviceCode: '在下方地址输入设备码：', authManualCode: '也可以粘贴 redirect URL 或授权码：', submit: '提交', cancelLogin: '取消登录', authComplete: 'OAuth 登录成功。', authFailed: 'OAuth 登录失败：',
-    models: '模型', modelCount: '{n} 个模型', addModel: '添加模型', refreshMagpie: '自动获取模型列表', refreshingMagpie: '正在获取模型列表…', magpieSyncTitle: '同步 Magpie 模型目录', magpieModelsHint: '同步 Magpie 当前启用的模型；自定义模型和同 ID 的本地覆盖会保留。Magpie 未提供限制时使用 32K context / 4K output 保守估值，可在模型设置中修改。', modelID: '模型 ID', modelName: '显示名称', contextWindow: '上下文窗口', maxOutput: '最大输出', add: '添加',
+    models: '模型', modelCount: '{n} 个模型', addModel: '添加模型', fetchModels: '获取模型', fetchingModels: '正在获取模型…', modelID: '模型 ID', modelName: '显示名称', contextWindow: '上下文窗口', maxOutput: '最大输出', add: '添加',
     edit: '编辑', restore: '恢复', remove: '删除', reasoning: '推理', vision: '视觉',
     advanced: '模型高级字段', advancedHint: '用于精确配置 thinking map、价格和兼容参数。', cancel: '取消', save: '保存',
     dangerZone: '危险操作', restoreProvider: '恢复供应商内置值', deleteProvider: '删除供应商',
@@ -32,11 +32,11 @@ const copy = {
     loading: '正在加载供应商…', saving: '正在保存…', source: '来源：{source}', selectProvider: '选择一个供应商以编辑。',
   },
   en: {
-    title: 'Model providers', subtitle: 'Manage connections, credentials, and models. Catalogs stay local except for Magpie.', addProvider: 'Add provider',
+    addProvider: 'Add provider',
     providers: 'Providers', missingKey: 'Missing key', builtIn: 'Built-in', custom: 'Custom', extension: 'Extension', enabled: 'Enabled', disabled: 'Disabled',
     connection: 'Connection', connectionHint: 'New requests use saved connection changes immediately.', magpieConnectionHint: 'Enter a Magpie address reachable from the Ki server: Completions usually ends in /v1, while Anthropic uses the root URL. Catalog refresh requests /v1/models automatically.', displayName: 'Display name', providerID: 'Provider ID', baseURL: 'Base URL', apiProtocol: 'API protocol', saveChanges: 'Save changes',
     credential: 'API credential', credentialHint: 'The key stays on this machine and is never shown again.', magpieCredentialHint: 'A local Magpie accepts any key; use magpie-ki for usage attribution. Remote gateways require one of their gateway keys.', apiKey: 'API key', saveKey: 'Save key', clear: 'Clear', stored: 'Credential configured', extensionCredentialHint: 'The provider extension owns this credential; the access token is never shown in the page.', noCredential: 'This provider does not require a credential.', login: 'Log in', browserLogin: 'Browser login', deviceLogin: 'Device code login', logout: 'Log out', copy: 'Copy', copied: 'Copied', authPending: 'Waiting for OAuth login to finish…', authDeviceCode: 'Enter this device code at the address below:', authManualCode: 'You can also paste the redirect URL or authorization code:', submit: 'Submit', cancelLogin: 'Cancel login', authComplete: 'OAuth login complete.', authFailed: 'OAuth login failed: ',
-    models: 'Models', modelCount: '{n} models', addModel: 'Add model', refreshMagpie: 'Fetch model list', refreshingMagpie: 'Fetching model list…', magpieSyncTitle: 'Sync Magpie model catalog', magpieModelsHint: 'Syncs the models currently enabled in Magpie. Custom models and same-ID local overrides are preserved. Missing limits use conservative estimates of 32K context / 4K output; edit them in model settings if known.', modelID: 'Model ID', modelName: 'Display name', contextWindow: 'Context window', maxOutput: 'Max output', add: 'Add model',
+    models: 'Models', modelCount: '{n} models', addModel: 'Add model', fetchModels: 'Fetch models', fetchingModels: 'Fetching models…', modelID: 'Model ID', modelName: 'Display name', contextWindow: 'Context window', maxOutput: 'Max output', add: 'Add model',
     edit: 'Edit', restore: 'Restore', remove: 'Delete', reasoning: 'Reasoning', vision: 'Vision',
     advanced: 'Advanced model fields', advancedHint: 'Precisely configure thinking maps, pricing, and compatibility.', cancel: 'Cancel', save: 'Save',
     dangerZone: 'Danger zone', restoreProvider: 'Restore built-in values', deleteProvider: 'Delete provider',
@@ -191,15 +191,11 @@ export function ProviderSettings({ api, onChanged }: Props) {
 
   return (
     <section className="provider-settings" data-testid="provider-settings" aria-busy={!!busy}>
-      <header className="settings-page-title provider-page-title">
-        <div><h3>{c.title}</h3><p>{c.subtitle}</p></div>
-        <button type="button" className="ui-button primary" data-testid="add-provider" onClick={() => { setError(''); setNewProvider(true) }}><IPlus />{c.addProvider}</button>
-      </header>
       {busy ? <div className="settings-progress" role="status">{c.saving}</div> : null}
 
       <div className="provider-workbench">
         <aside className="provider-sidebar" aria-label={c.providers}>
-          <div className="provider-sidebar-head"><span>{c.providers}</span><span>{providers.length}</span></div>
+          <button type="button" className="ui-button secondary provider-add" data-testid="add-provider" disabled={!!busy} onClick={() => { setError(''); setNewProvider(true) }}><IPlus />{c.addProvider}</button>
           <nav className="provider-nav" aria-label={c.providers}>
             {providers.map((provider, index) => {
               const split = index > 0 && providerReady(providers[index - 1]) && !providerReady(provider)
@@ -275,21 +271,12 @@ export function ProviderSettings({ api, onChanged }: Props) {
                 <div className="settings-section-head">
                   <div><h4>{c.models}</h4><p>{format(c.modelCount, { n: current.models.length })}</p></div>
                   <div className="provider-model-head-actions">
-                    {!extensionManaged ? <button type="button" className="ui-button secondary" data-testid="add-model" onClick={() => setNewModel(value => !value)}><IPlus />{c.addModel}</button> : null}
+                    {!extensionManaged ? <>
+                      <button type="button" className="ui-button secondary" data-testid="add-model" disabled={!!busy} onClick={() => setNewModel(value => !value)}><IPlus />{c.addModel}</button>
+                      <button type="button" className="ui-button secondary" data-testid="refresh-provider-models" disabled={!!busy} onClick={() => void run('fetch-models', () => api.refreshProviderModels(current.id))}><IRegen />{busy === 'fetch-models' ? c.fetchingModels : c.fetchModels}</button>
+                    </> : null}
                   </div>
                 </div>
-                {magpieManaged ? (
-                  <div className="magpie-sync-card">
-                    <span className="magpie-sync-mark" aria-hidden="true"><IRegen /></span>
-                    <div className="magpie-sync-copy">
-                      <strong>{c.magpieSyncTitle}</strong>
-                      <p>{c.magpieModelsHint}</p>
-                    </div>
-                    <button type="button" className="ui-button primary magpie-sync-button" data-testid="refresh-magpie-models" disabled={!!busy} onClick={() => void run('magpie-refresh', () => api.refreshProviderModels(current.id))}>
-                      <IRegen />{busy === 'magpie-refresh' ? c.refreshingMagpie : c.refreshMagpie}
-                    </button>
-                  </div>
-                ) : null}
                 {newModel ? (
                   <form className="model-create-form" data-testid="new-model-form" onSubmit={event => {
                     event.preventDefault()

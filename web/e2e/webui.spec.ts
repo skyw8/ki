@@ -9,7 +9,7 @@ import { serverToken, statePath } from './global-setup.ts'
 import { MIN_TOUCH_SIZE } from './touch-target.ts'
 import { focusedSessionReader, newSession } from './session.ts'
 import { contextCategory, expectColoredContextSegments, expectContextItemCount, expectConversationPosition, openContextCategory, openContextItem, openSystemSources } from './context.ts'
-import type { Entry } from '../src/api/types'
+import type { Entry, ProviderCatalog } from '../src/api/types'
 
 async function sendPrompt(page: Page, text: string) {
   const input = page.getByTestId('composer-input')
@@ -80,7 +80,7 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await expect(page.getByRole('heading', { name: '开始对话' })).toBeVisible()
   await expect(page.getByTestId('composer-input')).toBeVisible()
   await page.getByTestId('open-settings').click()
-  await expect(page.getByTestId('settings-tab-providers')).toHaveText('模型供应商')
+  await expect(page.getByTestId('settings-tab-providers')).toHaveText('供应商')
   await expect(page.getByTestId('settings-tab-skills')).toHaveText('Skills')
   await expect(page.getByTestId('settings-tab-tools')).toHaveText('Tools')
   await expect(page.getByTestId('settings-tab-mcp')).toHaveText('MCP')
@@ -223,6 +223,7 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await page.getByTestId('settings-tab-appearance').click()
   await page.getByTestId('lang-en').click()
   await expect(page.getByTestId('settings-tab-appearance')).toHaveText('Theme & language')
+  await expect(page.getByTestId('settings-tab-providers')).toHaveText('Providers')
   await expect(page.getByTestId('tab-conversation')).toHaveText('Chat')
   await page.getByTestId('lang-zh').click()
   await expect(page.getByTestId('settings-tab-appearance')).toHaveText('主题和语言')
@@ -306,12 +307,32 @@ test('nested dialogs isolate lower layers and restore attributes after out-of-or
 test('provider settings supports a complete add and edit flow', async ({ page }) => {
   const providerID = `pw-provider-${Date.now()}`
   const modelID = `pw-model-${Date.now()}`
-  let refreshedMagpie = false
+  const refreshed = new Set<string>()
+  const refreshRequests: string[] = []
+  let pendingRefresh: Route | undefined
+  let holdRefresh = true
+  let failRefresh = false
+  const completeRefresh = async (route: Route) => {
+    refreshed.add(decodeURIComponent(new URL(route.request().url()).pathname.split('/')[3]))
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
+  }
   await page.route('**/v1/providers', async route => {
     if (route.request().method() !== 'GET') return route.continue()
     const response = await route.fetch()
-    const catalog = await response.json() as { providers: Array<{ id: string; models: unknown[]; customized?: boolean; defaultModel: string; credential: unknown }> }
-    if (refreshedMagpie) {
+    const catalog = await response.json() as ProviderCatalog
+    catalog.providers.push({
+      ...catalog.providers[0], id: 'pw-extension-provider', name: 'Extension Provider', runtime: 'extension',
+      models: [], defaultModel: '', auth: { type: 'none' }, credential: { configured: false },
+    })
+    if (refreshed.has(providerID)) {
+      const custom = catalog.providers.find(provider => provider.id === providerID)
+      custom?.models.push({
+        id: 'fetched-model', name: 'Fetched Model', provider: providerID,
+        api: 'responses', baseUrl: 'https://example.test/responses/v1', enabled: true, builtin: false,
+        contextWindow: 131072, maxTokens: 16384, input: ['text'], reasoning: false, cost: null,
+      })
+    }
+    if (refreshed.has('magpie')) {
       const magpie = catalog.providers.find(provider => provider.id === 'magpie')
       if (magpie) {
         magpie.models = [{
@@ -326,19 +347,31 @@ test('provider settings supports a complete add and edit flow', async ({ page })
     }
     await route.fulfill({ status: response.status(), contentType: 'application/json', body: JSON.stringify(catalog) })
   })
-  await page.route('**/v1/providers/magpie/models/refresh', async route => {
-    refreshedMagpie = true
-    await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
+  await page.route('**/v1/providers/*/models/refresh', async route => {
+    refreshRequests.push(decodeURIComponent(new URL(route.request().url()).pathname.split('/')[3]))
+    if (failRefresh) return route.fulfill({ status: 502, contentType: 'application/json', body: JSON.stringify({ error: { message: 'Model catalog unavailable' } }) })
+    if (holdRefresh) { pendingRefresh = route; return }
+    await completeRefresh(route)
   })
   await page.goto('/')
   await page.getByTestId('open-settings').click()
-  await page.getByTestId('add-provider').click()
+  const providerSettings = page.getByTestId('provider-settings')
+  const addProvider = providerSettings.locator('.provider-sidebar').getByTestId('add-provider')
+  await expect(addProvider).toBeVisible()
+  await expectMinTarget(addProvider, 'add provider')
+  await expect(providerSettings.locator(':scope > header')).toHaveCount(0)
+  expect(await addProvider.evaluate(button => {
+    const sidebar = button.closest('.provider-sidebar')!
+    return sidebar.firstElementChild === button && !!button.nextElementSibling?.matches('.provider-nav')
+  })).toBe(true)
+  await addProvider.click()
 
   await expect(page.getByTestId('new-provider-dialog')).toBeVisible()
   await expect(page.getByTestId('new-provider-form').getByLabel('供应商 ID')).toBeFocused()
   await page.keyboard.press('Escape')
   await expect(page.getByTestId('new-provider-dialog')).toHaveCount(0)
   await expect(page.getByTestId('settings')).toBeVisible()
+  await expect(addProvider).toBeFocused()
   await page.getByTestId('add-provider').evaluate(button => {
     button.addEventListener('click', () => {
       requestAnimationFrame(() => {
@@ -414,18 +447,52 @@ test('provider settings supports a complete add and edit flow', async ({ page })
   expect((JSON.parse(await page.getByTestId('model-advanced').locator('textarea').inputValue()) as { maxTokens?: number }).maxTokens).toBe(4096)
   await page.keyboard.press('Escape')
 
+  const fetchModels = page.getByTestId('refresh-provider-models')
+  const addModel = page.getByTestId('add-model')
+  await expect(fetchModels).toHaveText('获取模型')
+  await expectMinTarget(fetchModels, 'fetch provider models')
+  expect(await fetchModels.evaluate(button => button.parentElement?.querySelector('[data-testid="add-model"]') !== null)).toBe(true)
+  await fetchModels.click()
+  await expect(fetchModels).toHaveText('正在获取模型…')
+  await expect(fetchModels).toBeDisabled()
+  await expect(addModel).toBeDisabled()
+  await expect(addProvider).toBeDisabled()
+  await expect.poll(() => refreshRequests).toEqual([providerID])
+  expect(pendingRefresh).toBeTruthy()
+  holdRefresh = false
+  await completeRefresh(pendingRefresh!)
+  const fetchedModel = page.getByTestId('provider-model-row').filter({ hasText: 'fetched-model' })
+  await expect(fetchedModel).toContainText('Fetched Model')
+  await expect(modelRow).toContainText('Playwright Model')
+  await expect(fetchModels).toHaveText('获取模型')
+  await expect(fetchModels).toBeEnabled()
+  await expect(addModel).toBeEnabled()
+  await expect(addProvider).toBeEnabled()
+  const modelCount = await page.getByTestId('provider-model-row').count()
+  failRefresh = true
+  await fetchModels.click()
+  await expect(page.getByTestId('toast')).toContainText('Model catalog unavailable')
+  await expect(fetchModels).toBeEnabled()
+  await expect(page.getByTestId('provider-model-row')).toHaveCount(modelCount)
+  await expect(modelRow).toContainText('Playwright Model')
+  await expect(fetchedModel).toContainText('Fetched Model')
+  expect(refreshRequests).toEqual([providerID, providerID])
+  failRefresh = false
+
   await page.getByRole('button', { name: '删除供应商' }).click()
   await expect(page.locator(`.provider-nav [data-provider-id="${providerID}"]`)).toHaveCount(0)
   await page.locator('.provider-nav [data-provider-id="magpie"]').click()
-  const refreshMagpie = page.getByTestId('refresh-magpie-models')
-  await expect(page.locator('.magpie-sync-card')).toBeVisible()
-  await expect(refreshMagpie).toBeVisible()
-  await expect(refreshMagpie).toHaveText('自动获取模型列表')
-  await expectMinTarget(refreshMagpie, 'Magpie catalog refresh')
-  await refreshMagpie.click()
+  await expect(page.locator('.magpie-sync-card')).toHaveCount(0)
+  await expect(fetchModels).toBeVisible()
+  await expect(fetchModels).toHaveText('获取模型')
+  await fetchModels.click()
   const synced = page.getByTestId('provider-model-row').filter({ hasText: 'vendor/model/nested' })
   await expect(synced).toContainText('Magpie Synced Model')
   await expect(synced).toContainText('262,144 ctx')
+  expect(refreshRequests).toEqual([providerID, providerID, 'magpie'])
+  await page.locator('.provider-nav [data-provider-id="pw-extension-provider"]').click()
+  await expect(fetchModels).toHaveCount(0)
+  await expect(addModel).toHaveCount(0)
 })
 
 test('markdown parse keeps fences, emphasis, CJK, and streaming closers', () => {
