@@ -117,7 +117,7 @@ body {
   --dsw-alias-label-primary-dimmed: var(--dsw-static-neutral-bluish-950);
   --dsw-alias-label-secondary: var(--dsw-static-neutral-bluish-700);
   --dsw-alias-label-tertiary: var(--dsw-static-neutral-bluish-600);
-  --dsw-alias-label-caption: var(--dsw-static-neutral-bluish-400);
+  --dsw-alias-label-caption: var(--dsw-static-neutral-bluish-700);
   --dsw-alias-brand: rgb(65, 118, 230);
   --dsw-alias-state-business: var(--dsw-static-deepseek-500);
   --dsw-alias-state-error: var(--dsw-static-red-600);
