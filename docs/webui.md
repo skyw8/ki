@@ -1040,8 +1040,9 @@ dialog 打开时，下层 dialog 同时设为 `inert` 和 `aria-hidden`，关闭
 的侧栏节点。
 
 Settings 和扩展 Details/Config 使用完整 tablist/tab/tabpanel 关系、roving tabindex 和方向键/
-Home/End 导航，inactive panel 保留关联节点但必须 hidden。`prefers-reduced-motion` 下关闭
-抽屉和控件过渡。
+Home/End 导航，inactive panel 保留关联节点但必须 hidden。手机设置页签按当前语言的完整文案
+计算宽度，水平内边距保留，触控目标至少 44px；超出视口时只滚动页签栏，键盘导航应把当前
+页签滚入可视区。`prefers-reduced-motion` 下关闭抽屉和控件过渡。
 
 ### 回归覆盖
 

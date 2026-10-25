@@ -3074,9 +3074,8 @@ select:focus-visible {
   .modal-body { padding: 8px 14px max(14px, env(safe-area-inset-bottom)); }
   .settings-tabs { padding: 0 8px; scroll-padding-inline: 8px; }
   .settings-tabs > .tab {
-    flex: 0 0 48px !important;
-    width: 48px !important;
-    min-width: 48px !important;
+    flex: 0 0 auto;
+    min-width: 44px;
     min-height: 44px;
     white-space: nowrap;
   }

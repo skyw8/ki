@@ -536,6 +536,20 @@ for (const profile of profiles) {
       const settings = page.getByTestId('settings')
       await expectDialogChrome(page, settings, `${profile.name} settings`, '.modal-head')
       await expectFocusWithin(settings, `${profile.name} settings`)
+      const expectSettingsLabelsFit = async () => {
+        const overflowing = await settings.getByRole('tab').evaluateAll(tabs => tabs.flatMap(tab => {
+          const range = document.createRange()
+          range.selectNodeContents(tab)
+          const text = range.getBoundingClientRect()
+          const button = tab.getBoundingClientRect()
+          const style = getComputedStyle(tab)
+          return text.width > button.width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) + 1
+            ? [{ label: tab.textContent, textWidth: text.width, buttonWidth: button.width }]
+            : []
+        }))
+        expect(overflowing, `${profile.name}: settings labels must fit their buttons`).toEqual([])
+      }
+      await expectSettingsLabelsFit()
       await page.getByTestId('add-provider').click()
       const newProvider = page.getByTestId('new-provider-dialog')
       await expectDialogChrome(page, newProvider, `${profile.name} new-provider dialog`, '.provider-dialog-head', '.provider-dialog-actions')
@@ -586,6 +600,18 @@ for (const profile of profiles) {
         await expectNoPageOverflow(page, `${profile.name} settings ${tab}`)
         await expectTouchButtons(profile, settings, `${profile.name} settings ${tab}`)
       }
+      await page.getByTestId('settings-tab-appearance').click()
+      await page.getByTestId('lang-en').click()
+      await expect(settings.getByRole('tab', { name: 'Notifications', exact: true })).toBeAttached()
+      await expectSettingsLabelsFit()
+      await page.getByTestId('settings-tab-providers').focus()
+      await page.keyboard.press('End')
+      const aboutTab = page.getByTestId('settings-tab-about')
+      await expect(aboutTab).toBeFocused()
+      await expect(aboutTab).toHaveAttribute('aria-selected', 'true')
+      await expectInsideViewport(page, aboutTab, `${profile.name} final settings tab`)
+      await page.getByTestId('settings-tab-appearance').click()
+      await page.getByTestId('lang-zh').click()
       await settings.getByRole('button', { name: /关闭对话框|Close dialog/ }).click()
       await expect(profile.compact ? page.getByTestId('mobile-nav-toggle') : settingsTrigger).toBeFocused()
 
