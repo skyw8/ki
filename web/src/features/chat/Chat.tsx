@@ -367,8 +367,8 @@ function TurnDivider({ stats }: { stats: TurnStats }) {
   const elapsedMs = live && stats.startedAt != null && stats.startedAt > 0 ? Math.max(0, now - stats.startedAt) : stats.elapsedMs
   const prompt = stats.input
   const hit = prompt > 0 && stats.cacheRead > 0 ? stats.cacheRead / prompt * 100 : null
-  const ttftMs = stats.lastTtftMs ?? 0
-  const tps = stats.lastTps ?? null
+  const ttftMs = stats.ttftMs
+  const tps = stats.tps
   const cells: ReactNode[] = [
     <span className={`turn-stat${live ? ' live' : ''}`} key="elapsed" data-testid="turn-elapsed"><IClock /><Duration ms={elapsedMs} label="elapsed" /></span>,
   ]
@@ -707,7 +707,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   }, [nodes, turnBase, compactTurns, items])
   const revisions = useMemo(() => new Map(items.map(it => {
     const stats = turns.get(it.id)
-    const footer = stats && [stats.turn, stats.live, stats.steps, stats.tools, stats.toolFailures, stats.cacheMisses, stats.input, stats.cacheRead, stats.lastTtftMs, stats.lastTps]
+    const footer = stats && [stats.turn, stats.live, stats.steps, stats.tools, stats.toolFailures, stats.cacheMisses, stats.input, stats.cacheRead, stats.ttftMs, stats.tps]
     return [it.id, {
       body: rowBodyToken(it.kind === 'node' ? it.node : it.turn.user),
       decoration: JSON.stringify([lang, it.kind === 'fold' ? [it.count, it.expanded, !!it.preview] : null, footer, edit?.messageId === it.id, branches?.[it.id]]),
@@ -890,7 +890,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
       }
       const id = selectedRequest.current ?? (navigation.following.current ? users.at(-1)?.id : users[lo]?.id) ?? null
       if (id !== last) { last = id; onActiveRequest?.(id) }
-      onAtBottom?.(virtualizer.getDistanceFromEnd() <= 8)
+      onAtBottom?.(Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop) <= 8)
     }
     const schedule = () => { if (!frame) frame = requestAnimationFrame(update) }
     update()

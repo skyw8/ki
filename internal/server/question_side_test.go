@@ -321,6 +321,52 @@ func TestQuestionSideForkIsIdempotentAndGETOnlyShowsSuffix(t *testing.T) {
 	}
 }
 
+func TestQuestionSideStatsSnapshotExcludesInheritedUsage(t *testing.T) {
+	s, _ := testServer(t)
+	source, q := questionSideSeed(t, s, false)
+	if err := source.SetLeaf(q.SnapshotEntryID); err != nil {
+		t.Fatal(err)
+	}
+	inherited, err := source.AppendMessage(types.Message{Role: "assistant", TTFTMs: 9000, LatencyMs: 18000, Usage: &types.Usage{Input: 9999, Output: 9999}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.SnapshotEntryID = inherited.ID
+	side, err := s.createQuestionSide(source, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = side.Close() }()
+	for turn := 0; turn < 6; turn++ {
+		if _, err := side.AppendMessage(types.Message{Role: "user"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := side.AppendMessage(types.Message{Role: "assistant", TTFTMs: 50, LatencyMs: 550, Usage: &types.Usage{Input: 20, CacheRead: 80, Output: 10}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tail, err := side.AppendDetailsEvent("context_usage", map[string]any{"usedTokens": 110})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{"?limit=1", "?view=compact&keep=0"} {
+		r := httptest.NewRequest(http.MethodGet, "/"+query, nil)
+		r.SetPathValue("id", side.ID())
+		w := httptest.NewRecorder()
+		s.get(w, r)
+		var got struct {
+			LeafID string        `json:"leafId"`
+			Stats  session.Stats `json:"sessionStats"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if w.Code != http.StatusOK || got.LeafID != tail.ID || got.Stats.TailID != tail.ID || got.Stats.Turns != 6 || got.Stats.Steps != 6 || got.Stats.Input != 600 || got.Stats.Output != 60 || got.Stats.CacheRead != 480 || got.Stats.TTFTSumMS != 300 || got.Stats.DecodeTokens != 60 || got.Stats.DecodeMS != 3000 {
+			t.Fatalf("side %s full stats: status=%d %+v", query, w.Code, got)
+		}
+	}
+}
+
 func mustJSON(t *testing.T, v any) string {
 	t.Helper()
 	data, err := json.Marshal(v)

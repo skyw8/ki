@@ -3,6 +3,7 @@ import { openSessionRow } from './sidebar.ts'
 import { serverToken } from './global-setup'
 
 export async function openStream(page: Page, history: number, emptySnapshot = false) {
+  await page.addInitScript(() => localStorage.setItem('ki-message-view', 'detailed'))
   const headers = { Authorization: `Bearer ${serverToken()}` }
   const response = await page.request.post('/v1/sessions', { headers, data: {} })
   const { id } = await response.json() as { id: string }

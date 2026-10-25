@@ -192,6 +192,7 @@ export function loadHistory(detail: SessionDetail): ViewState {
 	s.hasMore = !!detail.hasMore
 	s.oldestId = detail.oldestId
 	s.compactTurns = detail.compactTurns
+  s.sessionStats = detail.sessionStats
 	setIndex(s, detail.index)
 	addEntries(s, projectedBodies(detail.entries ?? [], detail.compactTurns))
 	return rebuild(s)
@@ -260,6 +261,9 @@ export function applyTail(s: ViewState, detail: SessionDetail, expectedLiveRevis
   const snapshotPath = detail.leafId && leafEntries(mergeEntries(next.index, next.entries), detail.leafId, next.compactTurns)
   const descendant = !!(stale && detail.leafId && detail.leafId !== s.leafId && snapshotPath && snapshotPath.some(e => e.id === s.leafId))
   if (descendant) next.leafId = detail.leafId
+  if (detail.sessionStats && (!stale || descendant || detail.leafId === s.leafId)) {
+    next.sessionStats = detail.sessionStats
+  }
   const boundary = s.oldestId ?? s.leafId
   const connected = !boundary || leafEntries(next.entries, next.leafId, next.compactTurns, false).some(e => e.id === boundary)
   const sameFrontier = detail.leafId != null && detail.leafId === s.leafId
@@ -1765,6 +1769,7 @@ function activePath(s: ViewState): Entry[] {
 }
 
 function snapshotSuffix(path: Entry[], tailId: string): Entry[] {
+  if (!tailId) return path.slice()
   const tail = path.findIndex(entry => entry.id === tailId)
   if (tail >= 0) return path.slice(0, tail)
   const child = path.findIndex(entry => entry.parentId === tailId || entry.previousId === tailId)
@@ -1835,6 +1840,7 @@ export function sessionStats(s: ViewState): SessionStats {
     else if (n.kind === 'assistant' && !n.streaming) out.steps += 1
   }
   if (out.turns === 0 && (path.some(e => e.type === 'message') || s.nodes.length)) out.turns = 1
+  applyBranchStats(s, path, out)
   const spans = runElapsedByTurn(s.records)
   for (const t of projected.values()) {
     spans.set(t.turnId, { ordinal: t.turn, elapsedMs: Math.max(spans.get(t.turnId)?.elapsedMs ?? 0, t.elapsedMs) })
@@ -1855,6 +1861,62 @@ export function sessionStats(s: ViewState): SessionStats {
     out.elapsedMs = Math.max(0, total - out.turnElapsedMs)
   }
   return out
+}
+
+function applyBranchStats(s: ViewState, path: Entry[], out: SessionStats): void {
+  const snapshot = s.sessionStats
+  if (!snapshot) return
+  const totals = { ...snapshot }
+  let turnId = snapshot.lastTurnId
+  let turnTtft = snapshot.lastTurnTtftMs
+  let turnHuman = snapshot.lastTurnHuman
+  for (const e of snapshotSuffix(path, snapshot.tailId).reverse()) {
+    if (isHumanEntry(e)) {
+      if (turnHuman || totals.turns === 0) {
+        totals.turns += 1
+        turnTtft = 0
+      }
+      turnId = e.id
+      turnHuman = true
+    } else if (totals.turns === 0 && (e.message || e.type === 'compaction' || e.type === 'run_aborted')) {
+      totals.turns = 1
+      turnId = e.id
+    }
+    if (e.type === 'compaction' && e.usage) totals.steps += 1
+    const m = e.message
+    if (m?.role !== 'assistant') continue
+    totals.steps += 1
+    if (!turnTtft && (m.ttftMs ?? 0) > 0) {
+      turnTtft = m.ttftMs!
+      totals.ttftSumMs += turnTtft
+      totals.ttftCount += 1
+    }
+    const u = m.usage
+    if (!u) continue
+    totals.input += (u.input ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0)
+    totals.output += u.output ?? 0
+    totals.cacheRead += u.cacheRead ?? 0
+    totals.cacheWrite += u.cacheWrite ?? 0
+    if (u.cost) { totals.hasCost = true; totals.cost += u.cost.total }
+    const decode = (m.latencyMs ?? 0) - (m.ttftMs ?? 0)
+    if ((m.ttftMs ?? 0) > 0 && decode > 0 && (u.output ?? 0) > 0) {
+      totals.decodeTokens += u.output!
+      totals.decodeMs += decode
+    }
+  }
+  const counted = new Set(path.map(e => e.id))
+  for (const n of s.nodes) {
+    if (n.kind === 'user' && isHumanPrompt(n.origin) && isTransientUserId(n.id) && !counted.has(n.id) && n.id !== turnId) {
+      if (turnHuman || totals.turns === 0) totals.turns += 1
+      turnHuman = true
+    }
+  }
+  Object.assign(out, {
+    turns: totals.turns, steps: totals.steps, input: totals.input, output: totals.output,
+    cacheRead: totals.cacheRead, cacheWrite: totals.cacheWrite, hasCost: totals.hasCost, cost: totals.cost,
+    ttftMs: totals.ttftCount > 0 ? totals.ttftSumMs / totals.ttftCount : 0,
+    tps: totals.decodeMs > 0 ? totals.decodeTokens / (totals.decodeMs / 1_000) : null,
+  })
 }
 
 function runElapsedByTurn(records: TrajRecord[]): Map<TurnId, { ordinal: number; elapsedMs: number }> {
@@ -1904,6 +1966,8 @@ export type TurnStats = {
   cacheMisses: number
   ttftMs: number
   tps: number | null
+  decodeTokens?: number
+  decodeMs?: number
   lastTtftMs?: number
   lastTps?: number | null
   live: boolean
@@ -2034,7 +2098,11 @@ export function projectTurnStats(nodes: ChatNode[], base = 0, summaries: Compact
     }, 0)
     merged.elapsedMs = Math.max(summary.stats.elapsedMs, merged.startedAt && lastAt > merged.startedAt ? lastAt - merged.startedAt : merged.durationMs)
     merged.ttftMs = summary.stats.ttftMs || observed.ttftMs
-    merged.tps = merged.steps === observed.steps ? observed.tps : summary.stats.tps
+    if (summary.stats.decodeMs !== undefined && summary.stats.decodeTokens !== undefined) {
+      merged.decodeMs = Math.max(0, summary.stats.decodeMs + (observed.decodeMs ?? 0) - (overlap?.decodeMs ?? 0))
+      merged.decodeTokens = Math.max(0, summary.stats.decodeTokens + (observed.decodeTokens ?? 0) - (overlap?.decodeTokens ?? 0))
+      merged.tps = merged.decodeMs > 0 ? merged.decodeTokens / (merged.decodeMs / 1_000) : null
+    } else merged.tps = merged.steps === observed.steps ? observed.tps : summary.stats.tps
     if (observed.lastTtftMs === 0 && observed.lastTps == null) {
       const latest = lastStepReadout(summary.lastStep)
       merged.lastTtftMs = latest.ttftMs

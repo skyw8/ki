@@ -412,7 +412,27 @@ export type QueuedItem = {
   extension?: string
 }
 
+export type BranchStats = {
+  tailId: string
+  turns: number
+  steps: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  hasCost: boolean
+  cost: number
+  ttftSumMs: number
+  ttftCount: number
+  decodeTokens: number
+  decodeMs: number
+  lastTurnId: string
+  lastTurnHuman: boolean
+  lastTurnTtftMs: number
+}
+
 export type SessionDetail = Partial<SessionInfo> & {
+  sessionStats?: BranchStats
   questions?: Question[]
   id: string
   leafId?: string
@@ -456,6 +476,7 @@ export type CompactTurn = {
     input: number; output: number; cacheRead: number; cacheWrite: number
     tools: number; toolFailures: number; cacheMisses: number
     hasCost: boolean; cost: number; ttftMs: number; tps: number | null; live: boolean
+    decodeTokens?: number; decodeMs?: number
   }
 }
 
@@ -637,6 +658,7 @@ export type TrajRecord = {
 }
 
 export type ViewState = {
+  sessionStats?: BranchStats
   questionsSessionId?: string
   questions?: Question[]
   turnId?: TurnId

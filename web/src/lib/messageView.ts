@@ -22,11 +22,11 @@ export function clampCompactKeep(n: number): number {
 
 export function loadMessageView(): MessageView {
   try {
-    const mode = localStorage.getItem(MODE_KEY) === 'compact' ? 'compact' : 'detailed'
+    const mode = localStorage.getItem(MODE_KEY) === 'detailed' ? 'detailed' : 'compact'
     const raw = localStorage.getItem(KEEP_KEY)
     return { mode, keep: raw == null ? DEFAULT_COMPACT_KEEP : clampCompactKeep(Number(raw)) }
   } catch {
-    return { mode: 'detailed', keep: DEFAULT_COMPACT_KEEP }
+    return { mode: 'compact', keep: DEFAULT_COMPACT_KEEP }
   }
 }
 

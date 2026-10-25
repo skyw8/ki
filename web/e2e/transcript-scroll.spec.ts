@@ -13,6 +13,7 @@ function entries(count: number): Entry[] {
 }
 
 async function fixture(page: Page, all: Entry[], tail: number, running = false) {
+  await page.addInitScript(() => localStorage.setItem('ki-message-view', 'detailed'))
   const headers = { Authorization: `Bearer ${serverToken()}` }
   const created = await page.request.post('/v1/sessions', { headers, data: {} })
   expect(created.ok()).toBeTruthy()

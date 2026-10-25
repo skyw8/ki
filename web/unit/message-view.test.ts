@@ -1,7 +1,34 @@
 import { expect, test } from 'bun:test'
-import { clampCompactKeep, foldReplies, groupTurns } from '../src/lib/messageView.ts'
+import { clampCompactKeep, foldReplies, groupTurns, loadMessageView } from '../src/lib/messageView.ts'
 import { hydrateEntries, loadHistory } from '../src/lib/model.ts'
 import type { ChatNode, CompactTurn, Entry, Message, SessionDetail, ViewState } from '../src/api/types.ts'
+
+test('message view defaults to compact and respects saved choices', () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  const saved = new Map<string, string>()
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: { getItem: (key: string) => saved.get(key) ?? null },
+  })
+  try {
+    expect(loadMessageView()).toEqual({ mode: 'compact', keep: 1 })
+    saved.set('ki-message-view', 'detailed')
+    saved.set('ki-message-view-keep', '3')
+    expect(loadMessageView()).toEqual({ mode: 'detailed', keep: 3 })
+    saved.set('ki-message-view', 'compact')
+    expect(loadMessageView()).toEqual({ mode: 'compact', keep: 3 })
+    saved.set('ki-message-view', 'invalid')
+    expect(loadMessageView()).toEqual({ mode: 'compact', keep: 3 })
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get: () => { throw new Error('storage unavailable') },
+    })
+    expect(loadMessageView()).toEqual({ mode: 'compact', keep: 1 })
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'localStorage', descriptor)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
+  }
+})
 
 const user = (id: string, text: string, origin?: string): ChatNode => ({ kind: 'user', id, text, content: [], origin })
 const asst = (id: string, text = 'ok', streaming = false): ChatNode => ({ kind: 'assistant', id, text, streaming })

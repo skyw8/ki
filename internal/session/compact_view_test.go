@@ -31,6 +31,75 @@ func compactFixture(turns, steps int) []Entry {
 	return entries
 }
 
+func TestBuildStatsActiveBranchAndMetadata(t *testing.T) {
+	message := func(id, parent string, m types.Message) Entry {
+		return Entry{Type: "message", ID: id, ParentID: parent, Message: &m}
+	}
+	entries := []Entry{
+		{Type: "request_header", ID: "header"},
+		message("u1", "header", types.Message{Role: "user"}),
+		message("missing", "u1", types.Message{Role: "assistant", StopReason: "error"}),
+		message("a1", "missing", types.Message{Role: "assistant", TTFTMs: 100, LatencyMs: 1100, Usage: &types.Usage{Input: 10, CacheRead: 90, CacheWrite: 5, Output: 20, Cost: &types.UsageCost{Total: 0.25}}}),
+		message("notice", "a1", types.Message{Role: "user", Origin: "agent:/root/child"}),
+		message("a2", "notice", types.Message{Role: "assistant", TTFTMs: 300, LatencyMs: 800, Usage: &types.Usage{Input: 20, Output: 30}}),
+		{Type: "compaction", ID: "compact", ParentID: "a2", Usage: &types.Usage{Input: 9000, Output: 9000, Cost: &types.UsageCost{Total: 90}}},
+		{Type: "compaction", ID: "checkpoint", ParentID: "compact"},
+		message("u2", "checkpoint", types.Message{Role: "user", Origin: "extension:input"}),
+		message("untimed", "u2", types.Message{Role: "assistant", Usage: &types.Usage{Input: 10, Output: 100}}),
+		message("a3", "untimed", types.Message{Role: "assistant", TTFTMs: 200, LatencyMs: 1200, Usage: &types.Usage{Input: 50, CacheRead: 50, Output: 40}}),
+		message("instant", "a3", types.Message{Role: "assistant", TTFTMs: 400, LatencyMs: 400, Usage: &types.Usage{Output: 10}}),
+		{Type: "context_usage", ID: "tail", ParentID: "instant"},
+		message("sibling-user", "a1", types.Message{Role: "user"}),
+		message("sibling", "sibling-user", types.Message{Role: "assistant", TTFTMs: 999, LatencyMs: 9999, Usage: &types.Usage{Input: 999, Output: 999}}),
+		{Type: "process_updated", ID: "sideband", Sideband: true},
+	}
+	want := Stats{TailID: "tail", Turns: 2, Steps: 7, Input: 235, Output: 200, CacheRead: 140, CacheWrite: 5, HasCost: true, Cost: 0.25, TTFTSumMS: 300, TTFTCount: 2, DecodeTokens: 90, DecodeMS: 2500, LastTurnID: "u2", LastTurnHuman: true, LastTurnTTFTMS: 200}
+	if got := BuildStats(entries, "tail"); got != want {
+		t.Fatalf("active branch stats: got %+v want %+v", got, want)
+	}
+	metadata := make([]Entry, 0, len(entries))
+	for _, entry := range entries {
+		raw, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded, _, err := decodeMetadata(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		metadata = append(metadata, decoded)
+	}
+	if got := BuildStats(metadata, "tail"); got != want {
+		t.Fatalf("metadata stats: got %+v want %+v", got, want)
+	}
+	page := BuildCompact(entries, "tail", "", 0)
+	if got := page.Turns[0].Stats; got.DecodeTokens != 50 || got.DecodeMS != 1500 || got.TPS == nil || *got.TPS != float64(50)/1.5 {
+		t.Fatalf("turn decode totals: %+v", got)
+	}
+}
+
+func TestBuildStatsEmptyAndPendingTurns(t *testing.T) {
+	if got := BuildStats(nil, ""); got != (Stats{}) {
+		t.Fatalf("empty stats: %+v", got)
+	}
+	entries := []Entry{
+		{Type: "request_header", ID: "header"},
+		{Type: "message", ID: "runtime", ParentID: "header", Message: &types.Message{Role: "user", Origin: "agent:/root/child"}},
+		{Type: "message", ID: "answer", ParentID: "runtime", Message: &types.Message{Role: "assistant", TTFTMs: 20}},
+		{Type: "message", ID: "pending", ParentID: "answer", Message: &types.Message{Role: "user"}},
+	}
+	if got := BuildStats(entries, "answer"); got.Turns != 1 || got.LastTurnID != "runtime" || got.LastTurnHuman || got.LastTurnTTFTMS != 20 {
+		t.Fatalf("runtime-only turn: %+v", got)
+	}
+	if got := BuildStats(entries, ""); got.TailID != "pending" || got.Turns != 1 || got.LastTurnID != "pending" || !got.LastTurnHuman || got.TTFTCount != 1 || got.LastTurnTTFTMS != 20 {
+		t.Fatalf("first human adopts leading runtime: %+v", got)
+	}
+	entries = append(entries, Entry{Type: "message", ID: "next", ParentID: "pending", Message: &types.Message{Role: "user"}})
+	if got := BuildStats(entries, "next"); got.Turns != 2 || got.LastTurnID != "next" || !got.LastTurnHuman || got.LastTurnTTFTMS != 0 || got.TTFTCount != 1 {
+		t.Fatalf("pending turn: %+v", got)
+	}
+}
+
 func TestCompactLifecycleIsDurableUnfoldedMetadata(t *testing.T) {
 	for _, status := range []string{"empty", "failed", "committed"} {
 		t.Run(status, func(t *testing.T) {

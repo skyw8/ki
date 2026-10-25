@@ -1,6 +1,8 @@
 import { expect, test, type Page } from '@playwright/test'
 import { openSessionRow } from './sidebar.ts'
-import type { Entry, LoopEvent } from '../src/api/types'
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import type { Entry, LoopEvent, SessionDetail } from '../src/api/types'
 import { serverToken } from './global-setup'
 import { openStream } from './stream-fixture'
 import { durationColumns, durationText } from '../src/lib/duration'
@@ -80,6 +82,116 @@ async function finishGeometryAudit(page: Page) {
   expect(result.frames).toBeGreaterThan(12)
   expect(result.violations).toEqual([])
 }
+
+for (const compact of [false, true]) test(`session statistics cover the full branch across sparse windows (compact=${compact})`, async ({ page }) => {
+  const headers = { Authorization: `Bearer ${serverToken()}` }
+  const created = await page.request.post('/v1/sessions', { headers, data: {} })
+  expect(created.ok()).toBe(true)
+  const { id, dir } = await created.json() as { id: string; dir: string }
+  const title = `statistics-${id}`
+  const entries: Entry[] = []
+  let parentId = ''
+  const startedAt = Date.now() - 120_000
+  for (let turn = 1; turn <= 12; turn++) {
+    const user = message(`u${turn}`, parentId, 'user', `Statistics request ${turn}`)
+    user.message!.timestamp = startedAt + turn * 8_000
+    entries.push(user)
+    for (let step = 1; step <= 2; step++) {
+      const assistant = message(`a${turn}-${step}`, step === 1 ? user.id : `a${turn}-1`, 'assistant', `Statistics answer ${turn}/${step}`)
+      Object.assign(assistant.message!, {
+        timestamp: user.message!.timestamp! + step * 3_000,
+        ttftMs: step === 1 ? turn * 200 : 2_000,
+        latencyMs: step === 1 ? turn * 200 + 1_000 : 5_000,
+        usage: { input: turn * step * 10, output: turn * step * 10, cacheRead: turn * (100 - step * 10),
+          cost: { input: 0, output: turn * step / 100, cacheRead: 0, cacheWrite: 0, total: turn * step / 100 } },
+      })
+      entries.push(assistant)
+      parentId = assistant.id
+    }
+  }
+  appendFileSync(join(dir, 'events.jsonl'), entries.map(entry => JSON.stringify(entry)).join('\n') + '\n')
+  const configPath = join(dir, 'config.json')
+  const config = JSON.parse(readFileSync(configPath, 'utf8'))
+  writeFileSync(configPath, JSON.stringify({ ...config, title, activeLeafId: parentId }))
+  const reads: Array<{ index: boolean; older: boolean; entries: number }> = []
+  await page.route(url => url.pathname === `/v1/sessions/${id}`, async route => {
+    if (route.request().method() !== 'GET') return route.fallback()
+    const url = new URL(route.request().url())
+    const index = url.searchParams.get('fields') === 'index'
+    const older = url.searchParams.has('before')
+    if (!index && !older && !compact) url.searchParams.set('limit', '6')
+    const response = await route.fetch({ url: url.href })
+    const detail = await response.json() as SessionDetail
+    reads.push({ index, older, entries: detail.entries?.length ?? 0 })
+    if (!index && !older) {
+      expect(detail.sessionStats).toMatchObject({ turns: 12, steps: 24, input: 15_600, output: 2_340, cacheRead: 13_260,
+        ttftSumMs: 15_600, ttftCount: 12, decodeTokens: 2_340, decodeMs: 48_000 })
+      expect(detail.entries!.length).toBeLessThan(entries.length)
+      delete detail.index
+    }
+    await route.fulfill({ response, json: detail })
+  })
+  await page.addInitScript(compact => {
+    localStorage.setItem('ki-lang', 'en')
+    localStorage.setItem('ki-message-view', compact ? 'compact' : 'detailed')
+    localStorage.setItem('ki-message-view-keep', '1')
+  }, compact)
+  await page.goto('/')
+  await openSessionRow(page, title)
+  const statistics = page.getByTestId('session-stats')
+  const expectTotals = async () => {
+    await expect(statistics).toContainText('12 turns · 24 steps')
+    await expect(statistics).toContainText('TTFT 1.3s · 49 tok/s')
+    await expect(statistics).toContainText('Cache hit 85.00%')
+    await expect(statistics).toContainText('In 15.6K · Out 2.3K')
+    await expect(statistics).toContainText('$2.34')
+  }
+  await expectTotals()
+  expect(reads.some(read => read.index)).toBe(false)
+  const beforeIndex = await statistics.locator('.session-stats-g').allTextContents()
+  await page.getByTestId('tab-context').click()
+  await expect.poll(() => reads.some(read => read.index)).toBe(true)
+  await page.getByTestId('tab-conversation').click()
+  await expectTotals()
+  await expect(statistics.locator('.session-stats-g')).toHaveText(beforeIndex)
+  const olderResponse = page.waitForResponse(response => {
+    const url = new URL(response.url())
+    return url.pathname === `/v1/sessions/${id}` && url.searchParams.has('before')
+  })
+  await page.getByTestId('load-older').click()
+  await olderResponse
+  await expect.poll(() => reads.some(read => read.older)).toBe(true)
+  if (compact) await expect(page.getByTestId('load-older')).toBeEnabled()
+  else await expect(page.getByTestId('load-older')).toHaveCount(0)
+  await expectTotals()
+  await expect(statistics.locator('.session-stats-g')).toHaveText(beforeIndex)
+  await page.reload()
+  await openSessionRow(page, title)
+  await expectTotals()
+  await expect(statistics.locator('.session-stats-g')).toHaveText(beforeIndex)
+})
+
+for (const compact of [false, true]) test(`turn footer shows the first valid TTFT and weighted throughput (compact=${compact})`, async ({ page }) => {
+  const first = message('first', 'untimed', 'assistant', 'First measured step')
+  const last = message('last', 'first', 'assistant', 'Last measured step')
+  const entries: Entry[] = [
+    message('u', '', 'user', 'One request with several model steps'),
+    message('untimed', 'u', 'assistant', 'No timing data'),
+    { ...first, message: { ...first.message!, ttftMs: 1_000, latencyMs: 2_000, usage: { output: 10 } } },
+    { ...last, message: { ...last.message!, ttftMs: 3_000, latencyMs: 6_000, usage: { output: 90 } } },
+    { type: 'compaction', id: 'compacted', parentId: 'last', summary: 'Compacted the completed model steps' },
+  ]
+  const fixture = await history(page, entries, compact)
+  await fixture.open()
+  const divider = page.getByTestId('turn-divider')
+  await expect(divider).toHaveCount(1)
+  await expect(divider).toContainText('TTFT 1s')
+  await expect(divider).toContainText('25 tok/s')
+  await page.reload()
+  await openSessionRow(page, `presentation-${fixture.id}`)
+  await expect(divider).toContainText('TTFT 1s')
+  await expect(divider).toContainText('25 tok/s')
+})
 
 for (const layout of layouts) test.describe(`transcript presentation ${layout.name}`, () => {
   const touch = layout.width < 1000

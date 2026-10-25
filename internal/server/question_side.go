@@ -687,5 +687,6 @@ func (s *Server) getQuestionSide(w http.ResponseWriter, r *http.Request, snap *s
 	if hasField(fields, "index") {
 		runtime["index"] = session.BuildIndex(visible)
 	}
+	runtime["sessionStats"] = session.BuildStats(visible, leaf)
 	writeJSON(w, http.StatusOK, s.sessionMapSnap(snap, runtime))
 }

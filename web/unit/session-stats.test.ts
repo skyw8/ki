@@ -1,8 +1,8 @@
 import { expect, test } from 'bun:test'
 import { applyEvent, appendOptimisticUser, loadHistory, hydrateEntries, hydrateTurn, projectTurnStats, cacheHitPercent, cacheHitRate, cacheMisses, emptyView, formatCost, formatDuration, formatTokens, formatTokensPerSecond, sessionStats, turnStats } from '../src/lib/model.ts'
-import { applyTail } from '../src/lib/model.ts'
+import { applyIndex, applyTail } from '../src/lib/model.ts'
 import type { TurnStats } from '../src/lib/model.ts'
-import type { ChatNode, CompactTurn, Entry, SessionDetail, TrajRecord, ViewState } from '../src/api/types.ts'
+import type { BranchStats, ChatNode, CompactTurn, Entry, SessionDetail, TrajRecord, ViewState } from '../src/api/types.ts'
 
 function view(over: Partial<ViewState> = {}): ViewState {
   return { ...emptyView(), ...over }
@@ -46,6 +46,136 @@ test('sessionStats sums the loaded window but keeps branch counts', () => {
   expect(s.hasCost).toBe(false)
   expect(s.ttftMs).toBe(200)
   expect(s.tps).toBeCloseTo(2)
+})
+
+const branchSnapshot: BranchStats = {
+  tailId: 'a2', turns: 2, steps: 2, input: 110, output: 40, cacheRead: 90, cacheWrite: 0,
+  hasCost: true, cost: 0.03, ttftSumMs: 400, ttftCount: 2, decodeTokens: 40, decodeMs: 1500,
+  lastTurnId: 'u2', lastTurnHuman: true, lastTurnTtftMs: 300,
+}
+
+function snapshotHistory() {
+  return loadHistory({ id: 'session', leafId: 'a2', hasMore: true, oldestId: 'u2', sessionStats: branchSnapshot,
+    entries: [msg('u2', 'a1', 'user'), msg('a2', 'u2', 'assistant', {
+      usage: { input: 10, output: 30 }, ttftMs: 300, latencyMs: 800,
+    })],
+  })
+}
+
+test('full branch statistics stay fixed through paging, index loading and compact projections', () => {
+  const s = snapshotHistory()
+  const expected = sessionStats(s)
+  expect(expected).toMatchObject({ turns: 2, steps: 2, input: 110, output: 40, cacheRead: 90, cost: 0.03, ttftMs: 200 })
+  expect(expected.tps).toBeCloseTo(40 / 1.5)
+  const history = [msg('u1', '', 'user'), msg('a1', 'u1', 'assistant', {
+    usage: { input: 10, cacheRead: 90, output: 10 }, ttftMs: 100, latencyMs: 1100,
+  })]
+  const paged = hydrateEntries(s, history, { hasMore: false, oldestId: 'u1' })
+  const indexed = applyIndex(s, { id: 'session', index: [
+    { type: 'message', id: 'u1', role: 'user' },
+    { type: 'message', id: 'a1', parentId: 'u1', role: 'assistant', usage: { input: 10, cacheRead: 90, output: 10 }, ttftMs: 100 },
+    { type: 'message', id: 'u2', parentId: 'a1', role: 'user' },
+    { type: 'message', id: 'a2', parentId: 'u2', role: 'assistant' },
+  ] })
+  const turn = [...turnStats(s.nodes).values()][0]
+  const compact = loadHistory({ id: 'session', leafId: 'a2', sessionStats: branchSnapshot,
+    entries: [s.entries[0]], compactTurns: [{ id: 'u2', parentId: 'a1', tailId: 'a2', entryIds: ['u2'], visibleNodeIds: ['u2'], hiddenCount: 1, stepCount: 2, stats: { ...turn, turn: 2 } }],
+  })
+  for (const state of [paged, indexed, compact]) {
+    const actual = sessionStats(state)
+    for (const field of ['turns', 'steps', 'input', 'output', 'cacheRead', 'cost', 'ttftMs', 'tps'] as const) expect(actual[field]).toBe(expected[field])
+  }
+})
+
+test('snapshot continuation counts completed live steps once and preserves each turn first TTFT', () => {
+  let s = snapshotHistory()
+  const event = { type: 'message_end', entryId: 'a3', parentId: 'a2', message: {
+    role: 'assistant', usage: { input: 5, cacheRead: 15, output: 20 }, ttftMs: 900, latencyMs: 1900,
+  } }
+  s = applyEvent(s, event)
+  s = applyEvent(s, event)
+  expect(sessionStats(s)).toMatchObject({ turns: 2, steps: 3, input: 130, output: 60, cacheRead: 105, ttftMs: 200 })
+  expect(sessionStats(s).tps).toBeCloseTo(60 / 2.5)
+  s = appendOptimisticUser(s, [{ type: 'text', text: 'next' }], 'request-3')
+  expect(sessionStats(s).turns).toBe(3)
+  s = applyEvent(s, { type: 'message_end', entryId: 'u3', parentId: 'a3', message: { role: 'user', clientRequestId: 'request-3', content: [] } })
+  s = applyEvent(s, { type: 'message_end', entryId: 'a4', parentId: 'u3', message: { role: 'assistant', ttftMs: 500, latencyMs: 1500, usage: { input: 10, output: 10 } } })
+  expect(sessionStats(s)).toMatchObject({ turns: 3, steps: 4, input: 140, output: 70, ttftMs: 300 })
+  const refreshed = applyTail(s, { id: 'session', leafId: 'a4', sessionStats: {
+    ...branchSnapshot, tailId: 'a4', turns: 3, steps: 4, input: 140, output: 70, cacheRead: 105,
+    ttftSumMs: 900, ttftCount: 3, decodeTokens: 70, decodeMs: 3500, lastTurnId: 'u3', lastTurnTtftMs: 500,
+  } })
+  expect(sessionStats(refreshed).tps).toBeCloseTo(20)
+  expect(sessionStats(refreshed).output).toBe(70)
+  const delayed = applyTail(refreshed, { id: 'session', leafId: 'a2', sessionStats: branchSnapshot }, refreshed.liveRevision - 1)
+  expect(sessionStats(delayed).output).toBe(70)
+})
+
+test('empty and metadata-only snapshots accept their first live completion', () => {
+  for (const tailId of ['', 'metadata-tail']) {
+    let s = loadHistory({ id: 'session', leafId: tailId, sessionStats: {
+      ...branchSnapshot, tailId, turns: 0, steps: 0, input: 0, output: 0, cacheRead: 0,
+      hasCost: false, cost: 0, ttftSumMs: 0, ttftCount: 0, decodeTokens: 0, decodeMs: 0,
+      lastTurnId: '', lastTurnHuman: false, lastTurnTtftMs: 0,
+    } })
+    s = applyEvent(s, { type: 'message_end', entryId: 'first', message: { role: 'assistant', ttftMs: 100, latencyMs: 1100, usage: { input: 10, output: 10 } } })
+    expect(sessionStats(s)).toMatchObject({ turns: 1, steps: 1, input: 10, output: 10, ttftMs: 100, tps: 10 })
+  }
+})
+
+test('an empty snapshot counts a runtime user notification before its assistant reply', () => {
+  let s = loadHistory({ id: 'session', sessionStats: {
+    ...branchSnapshot, tailId: '', turns: 0, steps: 0, input: 0, output: 0, cacheRead: 0,
+    ttftSumMs: 0, ttftCount: 0, decodeTokens: 0, decodeMs: 0,
+    lastTurnId: '', lastTurnHuman: false, lastTurnTtftMs: 0,
+  } })
+  s = applyEvent(s, { type: 'message_end', entryId: 'notification', message: { role: 'user', origin: 'agent:/root/child', content: [] } })
+  expect(sessionStats(s)).toMatchObject({ turns: 1, steps: 0, ttftMs: 0 })
+})
+
+test('the first human prompt shares a runtime prefix turn across a statistics snapshot', () => {
+  let s = loadHistory({ id: 'session', leafId: 'runtime', sessionStats: {
+    ...branchSnapshot, tailId: 'runtime', turns: 1, steps: 1, ttftSumMs: 100, ttftCount: 1,
+    lastTurnId: 'runtime', lastTurnHuman: false, lastTurnTtftMs: 100,
+  } })
+  s = appendOptimisticUser(s, [{ type: 'text', text: 'first human' }], 'human')
+  expect(sessionStats(s).turns).toBe(1)
+  s = applyEvent(s, { type: 'message_end', entryId: 'human', parentId: 'runtime', message: { role: 'user', clientRequestId: 'human', content: [] } })
+  s = applyEvent(s, { type: 'message_end', entryId: 'response', parentId: 'human', message: { role: 'assistant', ttftMs: 500, latencyMs: 1500, usage: { output: 10 } } })
+  expect(sessionStats(s)).toMatchObject({ turns: 1, steps: 2, ttftMs: 100 })
+})
+
+test('an untimed snapshot turn gains its first valid TTFT once and keeps decode samples separate', () => {
+  let s = loadHistory({ id: 'session', leafId: 'hidden-tail', sessionStats: {
+    ...branchSnapshot, tailId: 'hidden-tail', ttftSumMs: 100, ttftCount: 1, lastTurnTtftMs: 0,
+  } })
+  s = applyEvent(s, { type: 'message_end', entryId: 'new-step', parentId: 'hidden-intermediate', message: {
+    role: 'assistant', ttftMs: 500, latencyMs: 1500, usage: { output: 20 },
+  } })
+  expect(sessionStats(s).ttftMs).toBe(300)
+  expect(sessionStats(s).tps).toBeCloseTo(24)
+  s = applyEvent(s, { type: 'message_end', entryId: 'untimed', parentId: 'new-step', message: {
+    role: 'assistant', usage: { output: 100 },
+  } })
+  expect(sessionStats(s).output).toBe(160)
+  expect(sessionStats(s).ttftMs).toBe(300)
+  expect(sessionStats(s).tps).toBeCloseTo(24)
+})
+
+test('compact turn throughput merges hidden decode totals with live continuation and expansion', () => {
+  const { entries, summary } = compactFixture()
+  const timed = entries.map(e => e.id === 'a1' ? { ...e, message: { ...e.message!, usage: { output: 10 }, ttftMs: 100, latencyMs: 1100 } }
+    : e.id === 'a2' ? { ...e, message: { ...e.message!, usage: { output: 90 }, ttftMs: 300, latencyMs: 3300 } } : e)
+  const full = loadHistory({ id: 'session', entries: timed, leafId: 'r2' })
+  const stats = [...turnStats(full.nodes).values()][0]
+  let s = loadHistory({ id: 'session', entries: timed.filter(e => summary.entryIds.includes(e.id)), compactTurns: [{ ...summary, stats }], leafId: 'r2' })
+  s = applyEvent(s, { type: 'message_end', entryId: 'a3', parentId: 'r2', message: { role: 'assistant', usage: { output: 100 }, ttftMs: 500, latencyMs: 1500 } })
+  const readout = (state: ViewState) => [...projectTurnStats(state.nodes, state.turnBase, state.compactTurns).values()][0]
+  expect(readout(s).ttftMs).toBe(100)
+  expect(readout(s).tps).toBeCloseTo(40)
+  s = hydrateTurn(s, 'u1', timed)
+  expect(readout(s).tps).toBeCloseTo(40)
+  expect(readout(s).output).toBe(200)
 })
 
 test('null index from an empty session stays lazy when the first prompt arrives', () => {

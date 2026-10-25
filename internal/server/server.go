@@ -1564,6 +1564,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	}
 
 	runtime["leafId"] = snap.leafID
+	runtime["sessionStats"] = session.BuildStats(snap.entries, snap.leafID)
 	if compact {
 		page, _, err := snap.transcript.Compact(snap.leafID, "", "", keep)
 		if err != nil {

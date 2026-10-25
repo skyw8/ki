@@ -5665,6 +5665,73 @@ func TestSessionViewsCarryCacheMissOnTheAssistantEntry(t *testing.T) {
 	check("/v1/sessions/"+id+"?view=compact&before="+after.ID, "page")
 }
 
+func TestSessionStatsSnapshotCoversFullActiveBranch(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	dir, _ := srv.sidx.Lookup(id)
+	sess, err := session.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	var first session.Entry
+	for turn := 0; turn < 6; turn++ {
+		entry, err := sess.AppendMessage(types.Message{Role: "user"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if turn == 0 {
+			first = entry
+		}
+		message := types.Message{Role: "assistant", TTFTMs: 100, LatencyMs: 1100, Usage: &types.Usage{Input: 10, CacheRead: 90, Output: 20}}
+		if turn == 0 {
+			message.Content = []types.Content{{Type: "text", Text: strings.Repeat("x", session.TailReadLimit)}}
+		}
+		if _, err := sess.AppendMessage(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tail, err := sess.AppendDetailsEvent("context_usage", map[string]any{"usedTokens": 120})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.SetLeaf(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.AppendMessage(types.Message{Role: "assistant", TTFTMs: 9000, LatencyMs: 18000, Usage: &types.Usage{Input: 9999, Output: 9999}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.SetLeaf(tail.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{"?limit=1", "?view=compact&keep=0"} {
+		got := sessionGETURL(t, hs, "/v1/sessions/"+id+query)
+		raw, err := json.Marshal(got["sessionStats"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var stats session.Stats
+		if err := json.Unmarshal(raw, &stats); err != nil {
+			t.Fatal(err)
+		}
+		if stats.TailID != tail.ID || got["leafId"] != tail.ID || stats.Turns != 6 || stats.Steps != 6 || stats.Input != 600 || stats.Output != 120 || stats.CacheRead != 540 || stats.TTFTSumMS != 600 || stats.TTFTCount != 6 || stats.DecodeTokens != 120 || stats.DecodeMS != 6000 || stats.LastTurnID == "" || stats.LastTurnTTFTMS != 100 {
+			t.Fatalf("%s incomplete or cross-branch snapshot: %+v", query, stats)
+		}
+		if got["hasMore"] != true {
+			t.Fatalf("%s unexpectedly loaded full branch", query)
+		}
+		if _, ok := got["index"]; ok {
+			t.Fatalf("%s unexpectedly needed a full index", query)
+		}
+	}
+	for _, query := range []string{"?before=" + tail.ID + "&limit=1", "?view=compact&before=" + tail.ID, "?turn=" + first.ID, "?view=compact&turn=" + first.ID, "?entry=" + tail.ID, "?fields=index", "?fields=runtime"} {
+		got := sessionGETURL(t, hs, "/v1/sessions/"+id+query)
+		if _, ok := got["sessionStats"]; ok {
+			t.Fatalf("%s unexpectedly replaces aggregate snapshot", query)
+		}
+	}
+}
+
 func TestSessionColdSmallTailIncludesCompleteIndex(t *testing.T) {
 	srv, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())

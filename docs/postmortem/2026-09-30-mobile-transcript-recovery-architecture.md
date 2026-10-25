@@ -2,6 +2,14 @@
 
 日期：2026-09-30
 
+2026-10-25 统计范围补充：会话计数此前可从完整 index / compact ordinal 得到，但 token、缓存、
+TTFT 和 TPS 取自已加载 nodes / compactTurns，导致同一 leaf 翻页后汇总变化。现有完整会话
+GET 现在携带完整 active branch 的 `sessionStats` 和覆盖边界 `tailId`，前端仅叠加边界后的
+已完成 SSE entry；正文分页与索引不再决定累计范围。轮分割线统一取首个有效 TTFT 与整轮
+有效 decode token / decode 时长，compact 投影保留可相加的 decode 总量，避免快照与 live
+continuation 合并时复用旧 TPS。回归覆盖稀疏正文、索引、翻页、重载、重复事件、延迟恢复及
+compaction 尾部。此改动保留 assistant usage 的统计范围，未合并 compaction usage。
+
 审计基线：`45083fb5833822cbf8c31ab606abb00a992c4989`
 
 状态：**原始审计 + 已实施的核心重构；实施、验证及未关闭边界见第 9 节。**

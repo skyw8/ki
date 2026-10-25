@@ -43,6 +43,8 @@ function tailProbe(page: Page) {
       scrollTop: Math.round(el.scrollTop),
       maxScroll: Math.round(el.scrollHeight - el.clientHeight),
       toBottom: !!document.querySelector('[data-testid="to-bottom"]'),
+      intent: document.querySelector('[data-testid="chat"]')?.getAttribute('data-scroll-intent'),
+      observedOffset: document.querySelector('[data-testid="chat"]')?.getAttribute('data-scroll-offset'),
     }
   })
 }
@@ -51,6 +53,13 @@ test('compact mode folds each turn\'s earlier replies and keeps the prompt visib
   test.setTimeout(60_000)
   await page.goto('/')
   await expect(page.getByTestId('hero')).toBeVisible()
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('settings-tab-message').click()
+  await expect(page.getByTestId('view-compact')).toHaveAttribute('aria-checked', 'true')
+  await expect(page.getByTestId('view-keep')).toHaveValue('1')
+  await page.getByTestId('view-detailed').click()
+  await expect(page.getByTestId('view-detailed')).toHaveAttribute('aria-checked', 'true')
+  await page.getByTestId('settings').getByRole('button', { name: '关闭对话框' }).click()
   await sendPrompt(page, 'e2e-bash:echo fold-me')
   await expect(page.getByTestId('tool-card')).toHaveCount(1)
   await expect(page.getByTestId('composer-stop')).toHaveCount(0)
@@ -83,6 +92,17 @@ test('compact mode folds each turn\'s earlier replies and keeps the prompt visib
 
   const saved = await page.evaluate(() => [localStorage.getItem('ki-message-view'), localStorage.getItem('ki-message-view-keep')])
   expect(saved).toEqual(['compact', '0'])
+  await page.reload()
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('settings-tab-message').click()
+  await expect(page.getByTestId('view-compact')).toHaveAttribute('aria-checked', 'true')
+  await expect(page.getByTestId('view-keep')).toHaveValue('0')
+  await page.getByTestId('view-detailed').click()
+  await page.getByTestId('settings').getByRole('button', { name: '关闭对话框' }).click()
+  await page.reload()
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('settings-tab-message').click()
+  await expect(page.getByTestId('view-detailed')).toHaveAttribute('aria-checked', 'true')
 })
 
 test('opening a fold under the viewport keeps the row put and pauses follow-tail', async ({ page }) => {
@@ -157,7 +177,9 @@ test('expanding or collapsing the newest fold at the tail keeps following the bo
     const p = await tailProbe(page)
     return p.maxScroll > before.maxScroll && p.scrollTop === p.maxScroll
   }).toBe(true)
-  expect((await tailProbe(page)).toBottom).toBe(false)
+  const expandedTail = await tailProbe(page)
+  expect(expandedTail, 'expanded latest fold stays at the visible bottom').toMatchObject({ intent: 'following', toBottom: false })
+  expect(expandedTail.maxScroll - expandedTail.scrollTop).toBeLessThanOrEqual(8)
 
   await page.getByTestId('fold-row-btn').last().click()
   await expect(page.getByTestId('fold-row-btn').last()).toHaveAttribute('aria-expanded', 'false')
@@ -165,7 +187,9 @@ test('expanding or collapsing the newest fold at the tail keeps following the bo
     const p = await tailProbe(page)
     return p.scrollTop === p.maxScroll
   }).toBe(true)
-  expect((await tailProbe(page)).toBottom).toBe(false)
+  const collapsedTail = await tailProbe(page)
+  expect(collapsedTail, 'collapsed latest fold stays at the visible bottom').toMatchObject({ intent: 'following', toBottom: false })
+  expect(collapsedTail.maxScroll - collapsedTail.scrollTop).toBeLessThanOrEqual(8)
 })
 
 function seedBigFoldSession(home: string, cwd: string): { title: string; userNodeId: string } {

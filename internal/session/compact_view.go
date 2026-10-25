@@ -57,7 +57,91 @@ type TurnStats struct {
 	Cost         float64  `json:"cost"`
 	TTFTMS       int64    `json:"ttftMs"`
 	TPS          *float64 `json:"tps"`
+	DecodeTokens int64    `json:"decodeTokens"`
+	DecodeMS     int64    `json:"decodeMs"`
 	Live         bool     `json:"live"`
+}
+
+type Stats struct {
+	TailID         string  `json:"tailId"`
+	Turns          int     `json:"turns"`
+	Steps          int     `json:"steps"`
+	Input          int64   `json:"input"`
+	Output         int64   `json:"output"`
+	CacheRead      int64   `json:"cacheRead"`
+	CacheWrite     int64   `json:"cacheWrite"`
+	HasCost        bool    `json:"hasCost"`
+	Cost           float64 `json:"cost"`
+	TTFTSumMS      int64   `json:"ttftSumMs"`
+	TTFTCount      int     `json:"ttftCount"`
+	DecodeTokens   int64   `json:"decodeTokens"`
+	DecodeMS       int64   `json:"decodeMs"`
+	LastTurnID     string  `json:"lastTurnId"`
+	LastTurnHuman  bool    `json:"lastTurnHuman"`
+	LastTurnTTFTMS int64   `json:"lastTurnTtftMs"`
+}
+
+func BuildStats(entries []Entry, leaf string) Stats {
+	path := leafPath(entries, leaf)
+	stats := Stats{}
+	if len(path) == 0 {
+		return stats
+	}
+	stats.TailID = path[len(path)-1].ID
+	for _, span := range turnRanges(path) {
+		part := path[span.start:span.end]
+		turnID := ""
+		turnHuman := false
+		for _, e := range part {
+			if isHumanTurnMessage(e) {
+				turnID, turnHuman = e.ID, true
+				break
+			}
+			if turnID == "" && (e.Message != nil || e.Type == "compaction" || e.Type == "run_aborted") {
+				turnID = e.ID
+				if e.Message != nil && e.Message.Role == "toolResult" && e.Message.ToolCallID != "" {
+					turnID = e.Message.ToolCallID
+				}
+			}
+		}
+		if turnID == "" {
+			continue
+		}
+		stats.Turns++
+		stats.LastTurnID, stats.LastTurnHuman, stats.LastTurnTTFTMS = turnID, turnHuman, 0
+		for _, e := range part {
+			if e.Type == "compaction" && e.Usage != nil {
+				stats.Steps++
+			}
+			m := e.Message
+			if m == nil || m.Role != "assistant" {
+				continue
+			}
+			stats.Steps++
+			if stats.LastTurnTTFTMS == 0 && m.TTFTMs > 0 {
+				stats.LastTurnTTFTMS = m.TTFTMs
+				stats.TTFTSumMS += m.TTFTMs
+				stats.TTFTCount++
+			}
+			u := m.Usage
+			if u == nil {
+				continue
+			}
+			stats.Input += int64(u.Input) + int64(u.CacheRead) + int64(u.CacheWrite)
+			stats.Output += int64(u.Output)
+			stats.CacheRead += int64(u.CacheRead)
+			stats.CacheWrite += int64(u.CacheWrite)
+			if u.Cost != nil {
+				stats.HasCost = true
+				stats.Cost += u.Cost.Total
+			}
+			if m.TTFTMs > 0 && m.LatencyMs > m.TTFTMs && u.Output > 0 {
+				stats.DecodeTokens += int64(u.Output)
+				stats.DecodeMS += m.LatencyMs - m.TTFTMs
+			}
+		}
+	}
+	return stats
 }
 
 type CompactPage struct {
@@ -383,6 +467,7 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 	stats.Tools = len(tools)
 	stats.ToolFailures = len(failedTools)
 	stats.StartedAt, stats.ElapsedMS = clock.start, clock.elapsed()
+	stats.DecodeTokens, stats.DecodeMS = decodeTokens, decodeMS
 	if decodeMS > 0 {
 		tps := float64(decodeTokens) / (float64(decodeMS) / 1000)
 		stats.TPS = &tps

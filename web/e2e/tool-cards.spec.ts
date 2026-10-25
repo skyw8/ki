@@ -188,7 +188,10 @@ function result(id: string, parent: string, name: string, text: string, details:
 }
 
 test('search, read and coordination rows render their structured details', async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem('ki-lang', 'en'))
+  await page.addInitScript(() => {
+    localStorage.setItem('ki-lang', 'en')
+    localStorage.setItem('ki-message-view', 'detailed')
+  })
   const headers = { Authorization: `Bearer ${serverToken()}` }
   const created = await page.request.post('/v1/sessions', { headers, data: {} })
   const { id } = await created.json() as { id: string }

@@ -192,8 +192,11 @@ leaf 合并刷新已经请求过的索引，旧的在途索引完成后只补一
 
 每个 turn（user → 该 turn 最后一条节点）在末尾挂一条分割线，两侧各一段 hairline、中间是该
 turn 的单行汇总统计（`transcriptIdentity` 的 canonical TurnId + `projectTurnStats`，统计只在
-该人工轮的最后渲染 item 展示）：轮次、耗时、步数、工具调用与失败数、最近一条 assistant 的
-TTFT 与吞吐（`lastTtftMs` / `lastTps`，取该 turn 最后一条消息而非首步或整轮平均）、缓存
+该人工轮的最后渲染 item 展示）：轮次、耗时、步数、工具调用与失败数、本轮首个有效 assistant
+步骤的 TTFT，以及本轮有效计时步骤的总 output / 总 decode 时长（`ttftMs` / `tps`）。
+后续步骤、错误或 compaction 不覆盖首步 TTFT；decode 时长为 `latencyMs - ttftMs`，仅纳入
+TTFT > 0、decode > 0 且 output > 0 的步骤。compact 快照携带 `decodeTokens` / `decodeMs`，
+按快照 + 本地观察值 − 重叠步骤合并，因此实时 continuation 和展开不改变历史吞吐权重。缓存
 命中率与缓存未命中。输入/输出和 cost 已移到 composer 会话统计条，分割线只保留这一行（窄屏
 自动换行）。
 
@@ -311,11 +314,16 @@ Ctrl+Enter 带内容为 `delivery=steer`；Ctrl+Enter 空输入且 `queued[]` �
 #### 会话统计条
 
 composer 下方一条统计：轮/步是当前分支总数，TTFT、吞吐、缓存命中、输入/输出和 cost 都是
-**整个 session 的汇总**（`lib/model.ts` 的 `sessionStats`：`projectTurnStats` 把已加载窗口与
-compact 快照按 turn 合并一次，未加载的折叠 turn 再用 `compactTurns` 的服务端统计按 turn
-补齐，不重复计数；TTFT 取各 turn 首步延迟的平均，吞吐按输出加权的「总输出 / 总 decode
-时长」，缓存命中为「总 cacheRead / 总 prompt」，输入/输出与 cost 为累计值），不再是最近
-一条 assistant 的单次值；没有新 HTTP 接口。窄屏（≤520px）该行改成单行横向滚动并隐藏滚动
+**当前分支全部历史的汇总**。现有 `GET /v1/sessions/{id}` 的 detailed / compact 完整会话
+响应携带 `sessionStats`，服务端从完整 active leaf chain 的 metadata 计算，和正文分页无关；
+旁聊使用其可见分支计算。分页、单条正文、index-only 和 runtime-only 响应不替换此快照。
+`tailId` 标记快照已覆盖的最后 entry（包括非消息事件）；前端仅累加其后的已完成 SSE entry，
+刷新用新快照替换旧基线，延迟旧分支响应不能回退基线。展开正文、加载索引、翻页和重载不改变
+同一 leaf 的统计。TTFT 为各人工 turn 首个有效 TTFT 的算术平均，`lastTurnId` /
+`lastTurnTtftMs` 保证当前轮 continuation 不重复贡献首步；`lastTurnHuman` 使后台消息前缀与
+首次人工输入保持同一轮。吞吐为有效计时步骤的
+`decodeTokens / (decodeMs / 1000)`。缓存命中为「总 cacheRead / 总 prompt」，输入/输出与
+已知 cost 为累计值。本次汇总仍只纳入 assistant usage，compaction usage 的口径独立处理。窄屏（≤520px）该行改成单行横向滚动并隐藏滚动
 条（保留触摸拖动），不换行。
 
 #### 编辑与 fork
@@ -438,7 +446,8 @@ Agents 页的「上下文窗口上限」写 `toggles.json` 的 `agents.contextWi
 窗口更大时按它计算 context meter 与压缩阈值，更小时保持模型窗口；输入非法时保存按钮禁用
 并提示范围，保存成功以 toast 确认。
 
-Message 页还有「消息显示」detailed / compact：compact 下每个 turn 的人工输入照常显示，只保留
+Message 页还有「消息显示」detailed / compact：未保存偏好、偏好值无效或浏览器存储不可用时默认
+compact，保留已保存的 detailed / compact 选择。compact 下每个 turn 的人工输入照常显示，只保留
 该 turn 最近 N 条回复，subagent 等 runtime user-role 消息和其他更早回复一起折叠成一行（带
 折叠条数与末条预览），N 默认 1、范围 0–20。点折叠行可就地展开；最新人工 turn 的折叠行仅在
 原本已 following 时保持跟随，始终钉住该 turn 最新那条回复的底部，而不是钉折叠行本身——

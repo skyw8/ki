@@ -149,6 +149,7 @@ test.describe('scroll budgets', () => {
   test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
 
   test('opening, scrolling up and paging older history stay predictable', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('ki-message-view', 'detailed'))
     test.setTimeout(240_000)
     const { home, cwd } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string; cwd: string }
     seed(home, cwd, 400)
@@ -272,6 +273,7 @@ test.describe('perf hud', () => {
   test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
 
   test('the overlay is opt-in and reports live numbers', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('ki-message-view', 'detailed'))
     const { home, cwd } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string; cwd: string }
     seed(home, cwd, 60)
     await page.goto('/')
