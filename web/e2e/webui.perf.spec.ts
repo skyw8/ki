@@ -87,6 +87,7 @@ test.describe.configure({ mode: 'serial' })
 
 test('long history and huge message stay within GET/UI budgets', async ({ page }) => {
   test.setTimeout(120_000)
+  await page.addInitScript(() => localStorage.setItem('ki-message-view', 'detailed'))
   if (process.env.KI_PERF_WEAK === '1') {
     const cdp = await page.context().newCDPSession(page)
     await cdp.send('Network.enable')
