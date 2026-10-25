@@ -18,6 +18,25 @@ async function sendPrompt(page: Page, text: string) {
   await page.getByTestId('composer-send').click()
 }
 
+async function pressComposingEnter(input: Locator): Promise<void> {
+  for (const init of [{ isComposing: true }, { keyCode: 229 }]) {
+    const unhandled = await input.evaluate((el, init) => el.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter', code: 'Enter', bubbles: true, cancelable: true, ...init,
+    })), init)
+    expect(unhandled, `candidate confirmation ${JSON.stringify(init)} should stay with the input method`).toBe(true)
+  }
+}
+
+function trackComposerRequests(page: Page): { prompt: number; abort: number } {
+  const counts = { prompt: 0, abort: 0 }
+  page.on('request', request => {
+    if (request.method() !== 'POST') return
+    const action = new URL(request.url()).pathname.match(/^\/v1\/sessions\/[^/]+\/(prompt|abort)$/)?.[1]
+    if (action === 'prompt' || action === 'abort') counts[action]++
+  })
+  return counts
+}
+
 async function expectMinTarget(locator: Locator, label: string): Promise<void> {
   await expect(locator, `${label} should be visible`).toBeVisible()
   const box = await locator.boundingBox()
@@ -1287,11 +1306,18 @@ test('command palette is opaque, one-line, and inserts without sending', async (
   await expect(page.getByTestId('assistant-message')).toContainText('ok')
   const bubbles = page.getByTestId('user-bubble')
   const before = await bubbles.count()
+  const requests = trackComposerRequests(page)
+  const composerInput = page.getByTestId('composer-input')
+  await composerInput.fill('输入法候选词')
+  await pressComposingEnter(composerInput)
+  await expect(composerInput).toHaveValue('输入法候选词')
+  await expect(bubbles).toHaveCount(before)
+  expect(requests).toEqual({ prompt: 0, abort: 0 })
+  await composerInput.fill('')
 
   await page.getByTestId('command-btn').click()
   const palette = page.getByTestId('command-palette')
   await expect(palette).toBeVisible()
-  const composerInput = page.getByTestId('composer-input')
   const paletteID = await palette.getAttribute('id')
   expect(paletteID).toBeTruthy()
   await expect(palette).toHaveAccessibleName('命令')
@@ -1336,6 +1362,13 @@ test('command palette is opaque, one-line, and inserts without sending', async (
 
   await composerInput.fill('/ro')
   await expect(page.getByTestId('command-palette')).toBeVisible()
+  const activeBeforeComposition = await composerInput.getAttribute('aria-activedescendant')
+  expect(activeBeforeComposition).toBeTruthy()
+  await pressComposingEnter(composerInput)
+  await expect(palette).toBeVisible()
+  await expect(composerInput).toHaveAttribute('aria-expanded', 'true')
+  await expect(composerInput).toHaveAttribute('aria-activedescendant', activeBeforeComposition!)
+  await expect(composerInput).toHaveValue('/ro')
   await composerInput.press('Enter')
   await expect(page.getByTestId('command-palette')).toHaveCount(0)
   await expect(composerInput).toHaveValue('/ro')
@@ -1349,6 +1382,7 @@ test('command palette is opaque, one-line, and inserts without sending', async (
   await expect(page.getByTestId('command-palette')).toHaveCount(0)
   await expect(bubbles).toHaveCount(before)
 
+  expect(requests).toEqual({ prompt: 0, abort: 0 })
   await composerInput.fill('/reload')
   await composerInput.press('Enter')
   await composerInput.press('Enter')
@@ -1362,6 +1396,7 @@ test('command palette is opaque, one-line, and inserts without sending', async (
   expect(box!.y).toBeLessThan(48)
   expect(box!.x + box!.width).toBeGreaterThan((view!.width) - 400)
   await expect(bubbles).toHaveCount(before)
+  expect(requests).toEqual({ prompt: 1, abort: 0 })
 })
 
 test('slash command Tab completion drives a live compaction row', async ({ page }) => {
@@ -1464,8 +1499,18 @@ test('busy enter queues and ctrl+enter promotes the tail', async ({ page }) => {
   await page.getByTestId('composer-send').click()
   await expect(page.getByTestId('composer-stop')).toBeVisible()
   await expect.poll(async () => (await sessionQueue(page)).running).toBe(true)
+  const requests = trackComposerRequests(page)
   try {
+    await expect(input).toHaveValue('')
+    await pressComposingEnter(input)
+    await expect(page.getByTestId('composer-stop')).toBeVisible()
+    await expect.poll(async () => (await sessionQueue(page)).running).toBe(true)
+    expect(requests).toEqual({ prompt: 0, abort: 0 })
     await input.fill('queued-keep')
+    await pressComposingEnter(input)
+    await expect(input).toHaveValue('queued-keep')
+    await expect.poll(async () => (await sessionQueue(page)).texts).toEqual([])
+    expect(requests).toEqual({ prompt: 0, abort: 0 })
     await input.press('Enter')
     await expect(input).toHaveValue('')
     await expect.poll(async () => (await sessionQueue(page)).texts).toEqual(['queued-keep'])
@@ -1484,6 +1529,7 @@ test('busy enter queues and ctrl+enter promotes the tail', async ({ page }) => {
     await expect(page.getByTestId('queued-item')).toHaveCount(1)
     await expect(page.getByTestId('queued-list')).not.toContainText('queued-promote')
     await expect(page.getByTestId('user-bubble').filter({ hasText: 'queued-promote' }).first()).toBeVisible()
+    expect(requests).toEqual({ prompt: 3, abort: 0 })
   } finally {
     const stop = page.getByTestId('composer-stop')
     if (await stop.count()) await stop.click()

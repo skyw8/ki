@@ -294,6 +294,9 @@ subagent completion notification 的消息带 origin，与用户气泡可区分�
 
 #### 输入与发送
 
+输入法组合期间（`isComposing` 或 keyCode 229），主输入和编辑输入的快捷键处理直接交还
+浏览器；确认候选词不能发送、排队、停止运行或操作命令面板。结束组合后再按快捷键才执行动作。
+
 命令按钮 + 行首 `/` 打开 slash 面板，数据来自 session `commands[]`；点选只填入输入框，回车
 才发送；面板用不透明 `bg-layer-1`，描述单行省略。thinking 未选时显示该模型
 `defaultThinking`，优先 medium 而不是列表第一项 off。

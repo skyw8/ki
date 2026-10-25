@@ -281,6 +281,7 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
 			if (files.length) onFiles?.(files)
 		  }}
           onKeyDown={e => {
+            if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
             if (e.key === 'Escape' && palette) { e.preventDefault(); closePalette(); return }
             if (e.key === 'Escape' && mode === 'edit') { e.preventDefault(); onCancel?.(); return }
             if (mode === 'new' && e.key === 'Enter' && !e.shiftKey) {
