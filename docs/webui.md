@@ -114,7 +114,16 @@ subagent 子会话（`forkMode=tree`）常驻嵌套在父会话下方：默认�
 
 气泡、Markdown、Think、默认折叠的工具行。
 
-Markdown 用 Streamdown + remend 补全未闭合标记，`@streamdown/cjk` 处理中日韩强调。`mermaid`
+Markdown 用 Streamdown + remend 补全未闭合标记，`@streamdown/cjk` 处理中日韩强调。
+公式走 `@streamdown/math`（KaTeX）：块公式认 `$$` 和 `\[...\]`，行内认 `$$...$$` 和 `\(...\)`，
+不认单个 `$`，以免把价格和普通美元符号当成公式。`\(...\)` / `\[...\]` 在交给 Markdown
+解析器之前按围栏和行内代码分段转成 `$$`（remark 解析会把 `\(` 当 CommonMark 转义吃掉，
+所以不能放到 remark 插件里），代码围栏和行内代码里的同样文本保持源码。
+sanitize 跑在 KaTeX 之前，只放行 `code.math-inline` / `code.math-display` 这两个类；
+KaTeX 的输出不再过滤，安全性依赖 KaTeX 默认 `trust: false`（不执行 `\href`、`\htmlClass` 等）。
+公式失败时保留红色源码，不把页面脚本放出来。代码围栏用 `@streamdown/code`（Shiki）上色，
+颜色写进现有 `.md pre`，不用 Streamdown 自带的 Tailwind 代码块外壳，也不显示行号。
+`mermaid`
 / `plantuml`（含 `puml` 别名）围栏统一走 `DiagramBlock`：
 
 - 顶部左侧 diagram/source 切换，右侧下载 PNG/SVG 与复制（复制在最右）；

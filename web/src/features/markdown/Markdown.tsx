@@ -1,6 +1,8 @@
 import { createElement, isValidElement, lazy, memo, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
+import { code, type HighlightResult } from '@streamdown/code'
 import { cjk } from '@streamdown/cjk'
-import { Streamdown, parseMarkdownIntoBlocks, useIsCodeFenceIncomplete, type ExtraProps } from 'streamdown'
+import { math } from '@streamdown/math'
+import { Streamdown, parseMarkdownIntoBlocks, useIsCodeFenceIncomplete, type ExtraProps, type PluginConfig } from 'streamdown'
 import { useI18n } from '../../i18n/index'
 import { ICheck, ICopy } from '../../components/icons'
 import { MarkdownBlockSplitter, MarkdownDocument } from './streamText'
@@ -9,9 +11,12 @@ import { copyText } from '../../lib/clipboard'
 import { queueMarkdown } from './parseQueue'
 import { useTranscriptRowMeasurement } from '../chat/TranscriptRow'
 import { MarkdownImage, MarkdownLink } from './links'
+import { normalizeMathDelimiters } from './math-delimiters'
 import { markdownRehypePlugins } from './rehype'
 
-const plugins = { cjk }
+const codePlugin = code
+const codeThemes = codePlugin.getThemes()
+const plugins = { cjk, code: codePlugin, math } satisfies PluginConfig
 const linkSafety = { enabled: false }
 const DiagramBlock = lazy(() => import('./DiagramBlock'))
 
@@ -82,23 +87,68 @@ function CopyBtn({ getText, testid }: { getText: () => string; testid: string })
   )
 }
 
+function tokenStyle(token: HighlightResult['tokens'][number][number]): Record<string, string> | undefined {
+  const html = token.htmlStyle ?? {}
+  const style: Record<string, string> = {}
+  const light = html.color ?? token.color
+  if (light) style['--shiki-light'] = light
+  if (html['--shiki-dark']) style['--shiki-dark'] = html['--shiki-dark']
+  if (html['background-color']) {
+    style['--shiki-light-bg'] = html['background-color']
+    style['--shiki-dark-bg'] = html['--shiki-dark-bg'] ?? html['background-color']
+  }
+  return Object.keys(style).length ? style : undefined
+}
+
+type CodeLanguage = Parameters<typeof codePlugin.supportsLanguage>[0]
+
+function HighlightedCode({ text, language }: { text: string; language: string }) {
+  const [result, setResult] = useState<HighlightResult | null>(null)
+  useEffect(() => {
+    const lang = language as CodeLanguage
+    if (!codePlugin.supportsLanguage(lang)) {
+      setResult(null)
+      return
+    }
+    let current = true
+    const ready = codePlugin.highlight({ code: text, language: lang, themes: codeThemes }, next => {
+      if (current) setResult(next)
+    })
+    setResult(ready)
+    return () => { current = false }
+  }, [text, language])
+  if (!result) return <>{text}</>
+  return result.tokens.map((line, index) => (
+    <span key={index} className="md-code-line">
+      {line.length === 0
+        ? '\n'
+        : line.map((token, tokenIndex) => (
+          <span key={tokenIndex} style={tokenStyle(token)}>{token.content}</span>
+        ))}
+    </span>
+  ))
+}
+
 function MdCode({ node: _node, children, className, ...rest }: MdProps<'code'>) {
   const isIncomplete = useIsCodeFenceIncomplete()
+  const classes = (className ?? '').split(/\s+/)
+  const mathNode = classes.includes('math-inline') || classes.includes('math-display')
+  const language = mathNode ? '' : languageOf(className)
   if (!('data-block' in rest)) {
     return <code className={className}>{children}</code>
   }
-  const code = nodeText(children)
-  const kind = DIAGRAM_KINDS[languageOf(className)]
+  const source = nodeText(children)
+  const kind = DIAGRAM_KINDS[language]
   if (kind) {
     return (
       <Suspense fallback={<pre><code className={className}>{children}</code></pre>}>
-        <DiagramBlock kind={kind} code={code} isIncomplete={isIncomplete} />
+        <DiagramBlock kind={kind} code={source} isIncomplete={isIncomplete} />
       </Suspense>
     )
   }
   return (
     <pre>
-      <code className={className}>{children}</code>
+      <code className={className}><HighlightedCode text={source} language={language} /></code>
     </pre>
   )
 }
@@ -194,7 +244,8 @@ export const Markdown = memo(function Markdown({
 }) {
   const [document] = useState(() => new MarkdownDocument())
   const root = useRef<HTMLDivElement>(null)
-  const parts = useMemo(() => document.update(text, !streaming), [document, text, streaming])
+  const source = useMemo(() => normalizeMathDelimiters(text), [text])
+  const parts = useMemo(() => document.update(source, !streaming), [document, source, streaming])
   useLayoutEffect(() => recordStreamCommit(revision, root.current), [revision, text])
   const pieces = parts.segments.map((segment, index) => <MarkdownPiece key={index} text={segment} deferOffscreen={streaming} className={className} />)
   if (parts.tail) pieces.push(<MarkdownPiece key={parts.segments.length} text={parts.tail} live={streaming} className={className} />)

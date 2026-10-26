@@ -743,6 +743,14 @@
   overflow: auto;
 }
 .md pre code { padding: 0; background: none; font-size: 13px; line-height: 20px; }
+.md pre code span { color: var(--shiki-light, inherit); background: var(--shiki-light-bg, transparent); }
+body[data-theme='dark'] .md pre code span {
+  color: var(--shiki-dark, var(--shiki-light, inherit));
+  background: var(--shiki-dark-bg, transparent);
+}
+.md-code-line { display: block; white-space: pre; }
+.md .katex-display { margin: 8px 0 12px; overflow-x: auto; overflow-y: hidden; }
+.md .katex-error { color: var(--dsw-alias-state-error); font-family: var(--ds-font-family-code); }
 .md blockquote {
   margin: 8px 0 10px;
   padding: 0 0 0 12px;

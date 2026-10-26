@@ -5,6 +5,7 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { I18nProvider } from './i18n/index'
 import { Toaster } from './components/toast'
 import { consumeLauncherToken, createLauncherAuth } from './lib/launcher-auth'
+import 'katex/dist/katex.min.css'
 import './theme.css'
 import './app.css'
 

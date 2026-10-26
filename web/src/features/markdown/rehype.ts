@@ -1,18 +1,29 @@
+import { defaultSchema, type Schema } from 'hast-util-sanitize'
 import rehypeRaw from 'rehype-raw'
-import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
+import rehypeSanitize from 'rehype-sanitize'
 import type { PluggableList } from 'unified'
 
-export const markdownSanitizeSchema = {
+const baseAttributes = { ...defaultSchema.attributes }
+
+export const markdownSanitizeSchema: Schema = {
   ...defaultSchema,
+  attributes: {
+    ...baseAttributes,
+    code: [
+      ...(baseAttributes.code ?? []),
+      'metastring',
+      ['className', 'math-inline'],
+      ['className', 'math-display'],
+    ],
+  },
   clobberPrefix: '',
   protocols: {
     ...defaultSchema.protocols,
     href: [...(defaultSchema.protocols?.href ?? []), 'tel'],
   },
-  attributes: {
-    ...defaultSchema.attributes,
-    code: [...(defaultSchema.attributes?.code ?? []), 'metastring'],
-  },
 }
 
-export const markdownRehypePlugins: PluggableList = [rehypeRaw, [rehypeSanitize, markdownSanitizeSchema]]
+export const markdownRehypePlugins: PluggableList = [
+  rehypeRaw,
+  [rehypeSanitize, markdownSanitizeSchema],
+]
