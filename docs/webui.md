@@ -115,10 +115,16 @@ subagent 子会话（`forkMode=tree`）常驻嵌套在父会话下方：默认�
 气泡、Markdown、Think、默认折叠的工具行。
 
 Markdown 用 Streamdown + remend 补全未闭合标记，`@streamdown/cjk` 处理中日韩强调。
-公式走 `@streamdown/math`（KaTeX）：块公式认 `$$` 和 `\[...\]`，行内认 `$$...$$` 和 `\(...\)`，
-不认单个 `$`，以免把价格和普通美元符号当成公式。`\(...\)` / `\[...\]` 在交给 Markdown
-解析器之前按围栏和行内代码分段转成 `$$`（remark 解析会把 `\(` 当 CommonMark 转义吃掉，
-所以不能放到 remark 插件里），代码围栏和行内代码里的同样文本保持源码。
+公式走 `@streamdown/math`（KaTeX），并保持它的默认 `singleDollarTextMath: false`；单美元支持由前置
+归一化（`features/markdown/math-delimiters.ts`）完成，不用插件开关，因为 micromark 有两个会吃掉内容的坑：
+
+- 单行 `$$x=1$$` 会被当成**行内**公式，多行 `$$a=1\nb=2$$` 还会把 `$$a=1` 整行当 fence meta 丢掉。
+  归一化把这类块改写成 `$$\n…\n$$` 的独立 fence 行。
+- 单美元 `$...$` 直接交给 micromark 会把 `价格 $5 和 $10` 配成一整个公式。归一化只转换两侧
+  上下文明确的配对（左侧是空白、CJK、开括号或强调符），其余保持字面量；`\$` 与行内代码内的 `$` 不动。
+
+`\(...\)` / `\[...\]` 同样在这一层转换：remark 解析会把 `\(` 当 CommonMark 转义吃掉，所以不能放到
+remark 插件里。转换按代码围栏切块，围栏与行内代码里的同样文本保持源码。
 sanitize 跑在 KaTeX 之前，只放行 `code.math-inline` / `code.math-display` 这两个类；
 KaTeX 的输出不再过滤，安全性依赖 KaTeX 默认 `trust: false`（不执行 `\href`、`\htmlClass` 等）。
 公式失败时保留红色源码，不把页面脚本放出来。代码围栏用 `@streamdown/code`（Shiki）上色，

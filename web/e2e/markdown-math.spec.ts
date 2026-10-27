@@ -14,6 +14,10 @@ const body = [
   '\\left(\\beta\\,\\operatorname{mean}_t q_t\\right)',
   '\\]',
   '',
+  '其中 $\\theta\\in\\mathbb{R}^n$ 是权重，$h>0$ 是步长。',
+  '',
+  '$$U_i(\\theta)=\\theta+h\\,v_i(\\theta)$$',
+  '',
   '```tex',
   '\\(q_t\\) stays source',
   '```',
@@ -64,15 +68,28 @@ test('latex delimiters render through katex inside the transcript', async ({ pag
   const assistant = page.getByTestId('assistant-message').last()
 
   await expect(assistant.locator('.katex').first()).toBeVisible()
-  await expect(assistant.locator('.katex-display')).toHaveCount(1)
+  await expect(assistant.locator('.katex-display')).toHaveCount(2)
   await expect(assistant).not.toContainText('$$')
 
-  await expect(assistant.locator('.katex-mathml math')).toHaveCount(2)
-  await expect(assistant.locator('.katex-html')).toHaveCount(2)
+  await expect(assistant.locator('.katex-mathml math')).toHaveCount(5)
+  await expect(assistant.locator('.katex-html')).toHaveCount(5)
   await expect(assistant.locator('pre .katex')).toHaveCount(0)
 
   await expect(assistant).toContainText('$5')
   await expect(assistant.locator('.katex-error')).toHaveCount(0)
+})
+
+test('single dollar inline math renders without touching prices', async ({ page }) => {
+  await openTranscript(page)
+  const assistant = page.getByTestId('assistant-message').last()
+
+  await expect(assistant).not.toContainText('$\\theta')
+  await expect(assistant).not.toContainText('$h>0$')
+  await expect(assistant).toContainText('是权重')
+  await expect(assistant).toContainText('是步长')
+
+  await expect(assistant.locator('.katex-mathml math').filter({ hasText: '∈' })).toHaveCount(1)
+  await expect(assistant).toContainText('价格 $5 保持原样')
 })
 
 test('code fences keep latex source and get highlighted tokens', async ({ page }) => {
