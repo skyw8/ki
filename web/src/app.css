@@ -1366,6 +1366,20 @@ body[data-theme='dark'] .md pre code span {
 .receipt-status .receipt-value, .receipt-message .receipt-value { font-family: inherit; }
 
 .cell-result { display: flex; flex-direction: column; gap: 6px; }
+.cell-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: var(--dsw-alias-label-caption); font-size: 11px; }
+.cell-status { padding: 0 6px; border-radius: 6px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); }
+.cell-status.completed { color: var(--dsw-alias-state-success); background: color-mix(in srgb, var(--dsw-alias-state-success) 12%, transparent); }
+.cell-status.failed { color: var(--dsw-alias-state-error); background: color-mix(in srgb, var(--dsw-alias-state-error) 12%, transparent); }
+.cell-status.terminated { color: var(--dsw-alias-state-warning); background: color-mix(in srgb, var(--dsw-alias-state-warning) 12%, transparent); }
+.cell-id { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--ds-font-family-code); }
+.cell-warn { color: var(--dsw-alias-state-warning); }
+.cell-sec { border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; overflow: hidden; background: var(--dsw-alias-markdown-code); }
+.cell-sec-head { padding: 4px 10px; border-bottom: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-caption); font-size: 11px; }
+.cell-code, .cell-output, .cell-error { margin: 0; padding: 8px 10px; max-height: 320px; overflow: auto; font-family: var(--ds-font-family-code); font-size: 12px; line-height: 1.45; white-space: pre; tab-size: 4; user-select: text; cursor: text; }
+.cell-error { border: 1px solid color-mix(in srgb, var(--dsw-alias-state-error) 45%, var(--dsw-alias-border-l1)); border-radius: 10px; color: var(--dsw-alias-state-error); background: color-mix(in srgb, var(--dsw-alias-state-error) 6%, var(--dsw-alias-markdown-code)); }
+.cell-calls { display: flex; flex-direction: column; gap: 6px; }
+.cell-images { display: flex; flex-wrap: wrap; gap: 8px; }
+.cell-image { max-width: 100%; border-radius: 8px; }
 .cell-call { border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; overflow: hidden; }
 .cell-call.err { border-color: color-mix(in srgb, var(--dsw-alias-state-error) 45%, var(--dsw-alias-border-l1)); }
 .cell-call-head { display: flex; gap: 8px; padding: 4px 10px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-caption); font-size: 11px; }

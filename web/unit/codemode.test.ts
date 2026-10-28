@@ -81,6 +81,7 @@ test('nested Code Mode audit has identical live and reloaded cards without provi
     args: { file_path: 'go.mod' }, result: 'module ki', details: { bytes: 9 },
     running: false, durationMs: 300, startedAt: 1250, isError: false, turnId: 'u',
   })
+  expect(tool(reloaded, 'exec-1').outputBlocks).toEqual(text('Script running with cell ID cell-1'))
   expect(state.entries.filter(e => e.message?.role === 'toolResult').map(e => e.message?.toolCallId)).toEqual(['exec-1', 'wait-1'])
   expect(state.entries.filter(e => e.type.startsWith('tool_execution_')).map(e => e.id)).toEqual(['nested-start', 'nested-update', 'nested-end', 'notify'])
   expect(reloaded.records.filter(r => r.id === 'nested-1')).toHaveLength(1)

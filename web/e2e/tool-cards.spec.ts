@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { openSessionRow } from './sidebar.ts'
-import type { Entry } from '../src/api/types'
+import type { Content, Entry } from '../src/api/types'
 import { serverToken } from './global-setup'
 import { openStream } from './stream-fixture'
 
@@ -180,10 +180,10 @@ function call(id: string, parent: string, name: string, args: unknown): Entry {
   return { type: 'message', id, parentId: parent, message: { role: 'assistant', content: [{ type: 'toolCall', id, name, arguments: args }] } }
 }
 
-function result(id: string, parent: string, name: string, text: string, details: unknown): Entry {
+function result(id: string, parent: string, name: string, text: string, details: unknown, content?: Content[]): Entry {
   return {
     type: 'message', id: `${id}-r`, parentId: parent,
-    message: { role: 'toolResult', toolName: name, toolCallId: id, timestamp: 1_800_000_001_000, durationMs: 20, content: [{ type: 'text', text }], details },
+    message: { role: 'toolResult', toolName: name, toolCallId: id, timestamp: 1_800_000_001_000, durationMs: 20, content: content ?? [{ type: 'text', text }], details },
   }
 }
 
@@ -201,6 +201,7 @@ test('search, read and coordination rows render their structured details', async
   const grepText = 'docs/provider.md:12: cache key\ndocs/session.md:7: fork key\n\n[files: 2; matches: 2; truncated: false]'
   const globText = 'Found 2 files\ndocs/a.md\ndocs/b.md'
   const cellText = 'Script completed{"content":[{"type":"text","text":"cell one"}],"isError":false}{"content":[{"type":"text","text":"cell two"}],"isError":true}'
+  const execCode = 'const cfg = await tools.read({ file_path: "go.mod" })\ntext(cfg.content[0].text)'
   const entries: Entry[] = [
     { type: 'message', id: 'u', parentId: undefined, message: { role: 'user', timestamp: 1_800_000_000_000, content: [{ type: 'text', text: 'inspect everything' }] } },
     call('tc-grep', 'u', 'grep', { pattern: 'key' }),
@@ -225,9 +226,14 @@ test('search, read and coordination rows render their structured details', async
     }),
     call('tc-cell', 'tc-agent-r', 'exec', {}),
     result('tc-cell', 'tc-cell', 'exec', cellText, { cell_id: 'cell-1', status: 'completed', truncated: false }),
+    call('tc-code', 'tc-cell-r', 'exec', { code: execCode }),
+    result('tc-code', 'tc-code', 'exec', 'Script completedmodule ki', { cell_id: 'cell-2', status: 'completed', truncated: false }, [
+      { type: 'text', text: 'Script completed' },
+      { type: 'text', text: 'module ki' },
+    ]),
   ]
   await page.route(url => url.pathname === `/v1/sessions/${id}`, route => route.request().method() === 'GET'
-    ? route.fulfill({ json: { id, title, entries, running: false, leafId: 'tc-cell-r', oldestId: 'u', hasMore: false } })
+    ? route.fulfill({ json: { id, title, entries, running: false, leafId: 'tc-code-r', oldestId: 'u', hasMore: false } })
     : route.fallback())
   await page.goto('/')
   await openSessionRow(page, title)
@@ -252,9 +258,16 @@ test('search, read and coordination rows render their structured details', async
   await agentCard.locator('.tool-row-toggle').click()
   await expect(agentCard.getByTestId('agent-receipt')).toContainText('/root/audit')
 
-  const cellCard = cardOf('exec')
+  const cellCard = page.locator('[data-testid="tool-card"][data-id="tc-cell"]')
   await cellCard.locator('.tool-row-toggle').click()
   await expect(cellCard.getByTestId('cell-call')).toHaveCount(2)
   await expect(cellCard.getByTestId('cell-call').nth(1)).toHaveClass(/err/)
   await expect(cellCard.getByTestId('cell-call').nth(0)).toContainText('cell one')
+
+  const codeCard = page.locator('[data-testid="tool-card"][data-id="tc-code"]')
+  await expect(codeCard.getByTestId('tool-preview')).toHaveText('module ki')
+  await codeCard.locator('.tool-row-toggle').click()
+  await expect(codeCard.getByTestId('cell-status')).toHaveText('completed')
+  await expect(codeCard.getByTestId('cell-code')).toHaveText(execCode)
+  await expect(codeCard.getByTestId('cell-output')).toHaveText('module ki')
 })

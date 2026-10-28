@@ -177,7 +177,7 @@ Tailwind/shadcn 外壳。
 | `glob` | 文件列表 |
 | `spawn_agent` / `send_message` / `followup_task` / `wait_agent` / `interrupt_agent` | 一行回执 |
 | `list_agents` | 计数摘要 |
-| `exec` / `wait`（Code Mode） | 把 `Script completed{…}{…}` 拆成每个嵌套调用一块并标出失败项 |
+| `exec` / `wait`（Code Mode） | 代码与输出分区：`exec` 展开显示完整 JS 源码（`args.code` 或 freeform `args.input`）、cell 状态/ID/截断标记，以及显式 `text()` 输出（按 content block 分行）；`wait` 只显示 cell 输出。旧结果仍按 `Script completed{…}{…}` 拆成嵌套调用块并标出失败项 |
 | 其余 | IN·OUT 卡 |
 
 所有行都保留 Inspect；`exec_command` 的 `cmd` 和路径预览可选择、可复制。渲染优先读结构化

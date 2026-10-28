@@ -1,86 +1,77 @@
 import { memo } from 'react'
+import type { Content } from '../../../api/types'
 import { useI18n } from '../../../i18n/index'
+import { codeModeSnapshot, codeModeStatusKey, nestedCalls } from './parse'
 
-export type NestedCall = { text: string; isError: boolean }
+export { nestedCalls }
 
-const PREFIXES = ['Script completed', 'Script running'] as const
-
-export function nestedCalls(result: string): NestedCall[] | null {
-  const text = result.trim()
-  let rest = text
-  for (const prefix of PREFIXES) {
-    if (rest.startsWith(prefix)) {
-      rest = rest.slice(prefix.length).trimStart()
-      break
-    }
-  }
-  if (!rest.startsWith('{') && !rest.startsWith('[')) return null
-  const calls: NestedCall[] = []
-  let index = 0
-  while (index < rest.length) {
-    while (index < rest.length && /\s/.test(rest[index])) index++
-    if (index >= rest.length) break
-    const end = jsonValueEnd(rest, index)
-    if (end < 0) return null
-    let value: unknown
-    try {
-      value = JSON.parse(rest.slice(index, end))
-    } catch {
-      return null
-    }
-    index = end
-    const envelope = value as { content?: { text?: string }[]; isError?: boolean }
-    const body = Array.isArray(envelope.content)
-      ? envelope.content.map(block => block?.text ?? '').join('')
-      : typeof value === 'string' ? value : JSON.stringify(value)
-    calls.push({ text: body, isError: !!envelope.isError })
-  }
-  return calls.length ? calls : null
+export type CodeModeResultProps = {
+  result: string
+  blocks?: Content[]
+  details?: unknown
+  source?: string
+  cellId?: string
+  running?: boolean
+  testId?: string
 }
 
-function jsonValueEnd(text: string, start: number): number {
-  const open = text[start]
-  if (open !== '{' && open !== '[') return -1
-  const stack: string[] = [open === '{' ? '}' : ']']
-  let inString = false
-  let escaped = false
-  for (let i = start + 1; i < text.length; i++) {
-    const ch = text[i]
-    if (inString) {
-      if (escaped) escaped = false
-      else if (ch === '\\') escaped = true
-      else if (ch === '"') inString = false
-      continue
-    }
-    if (ch === '"') {
-      inString = true
-      continue
-    }
-    if (ch === '{') stack.push('}')
-    else if (ch === '[') stack.push(']')
-    else if (ch === '}' || ch === ']') {
-      if (stack.pop() !== ch) return -1
-      if (stack.length === 0) return i + 1
-    }
-  }
-  return -1
-}
-
-export const CodeModeResult = memo(function CodeModeResult({ result, testId }: { result: string; testId?: string }) {
+export const CodeModeResult = memo(function CodeModeResult({
+  result, blocks, details, source, cellId, running, testId,
+}: CodeModeResultProps) {
   const { t } = useI18n()
-  const calls = nestedCalls(result)
-  if (!calls) return null
+  const snapshot = codeModeSnapshot(result, blocks, details)
+  const id = snapshot.cellId || cellId || ''
+  const statusKey = codeModeStatusKey(snapshot.status)
+  const status = statusKey ? t(statusKey) : snapshot.status
+  const showOutput = !snapshot.calls && (!!snapshot.body || !running)
+  const showMeta = !!status || !!id || snapshot.truncated
   return (
-    <div className="cell-result" data-testid={testId ?? 'cell-result'}>
-      {calls.map((call, index) => (
-        <div className={`cell-call${call.isError ? ' err' : ''}`} key={index} data-testid="cell-call">
-          <div className="cell-call-head">
-            <span className="cell-call-index">#{index + 1}</span>
-            <span className={call.isError ? 'cell-call-state err' : 'cell-call-state'}>{t(call.isError ? 'tool.callFailed' : 'tool.callOk')}</span>
-          </div>
-          <pre className="cell-call-body">{call.text || t('tool.emptyResult')}</pre>
+    <div className="cell-result" data-testid={testId ?? 'cell-result'} data-state={snapshot.status || undefined}>
+      {showMeta ? (
+        <div className="cell-meta">
+          {status ? <span className={`cell-status ${snapshot.status}`} data-testid="cell-status">{status}</span> : null}
+          {id ? <span className="cell-id" title={id}>#{id}</span> : null}
+          {snapshot.truncated ? <span className="cell-warn">{t('tool.outputTruncated')}</span> : null}
         </div>
-      ))}
+      ) : null}
+      {source ? (
+        <div className="cell-sec" data-testid="cell-code-sec">
+          <div className="cell-sec-head">{t('tool.code')}</div>
+          <pre className="cell-code" data-testid="cell-code">{source}</pre>
+        </div>
+      ) : null}
+      {showOutput ? (
+        <div className="cell-sec" data-testid="cell-output-sec">
+          <div className="cell-sec-head">{t('tool.output')}</div>
+          <pre className="cell-output" data-testid="cell-output">{snapshot.body || t('tool.emptyResult')}</pre>
+        </div>
+      ) : null}
+      {snapshot.calls ? (
+        <div className="cell-calls">
+          {snapshot.calls.map((call, index) => (
+            <div className={`cell-call${call.isError ? ' err' : ''}`} key={index} data-testid="cell-call">
+              <div className="cell-call-head">
+                <span className="cell-call-index">#{index + 1}</span>
+                <span className={call.isError ? 'cell-call-state err' : 'cell-call-state'}>{t(call.isError ? 'tool.callFailed' : 'tool.callOk')}</span>
+              </div>
+              <pre className="cell-call-body">{call.text || t('tool.emptyResult')}</pre>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {snapshot.images.length ? (
+        <div className="cell-images">
+          {snapshot.images.map((image, index) => (
+            <img
+              className="cell-image"
+              key={index}
+              alt=""
+              src={`data:${image.mimeType};base64,${image.data}`}
+            />
+          ))}
+        </div>
+      ) : null}
+      {snapshot.error ? <pre className="cell-error" data-testid="cell-error">{snapshot.error}</pre> : null}
     </div>
   )
 })

@@ -2,6 +2,9 @@ import { describe, expect, test } from 'bun:test'
 import { nestedCalls } from '../src/features/chat/tools/CodeModeResult'
 import { agentListSummary, receiptOf } from '../src/features/chat/tools/Receipts'
 import {
+  codeModePreview,
+  codeModeSnapshot,
+  codeModeSource,
   diffFiles,
   diffStat,
   execSnapshot,
@@ -133,6 +136,42 @@ test('Code Mode results split concatenated envelopes, braces inside strings incl
   expect(calls).toEqual([{ text: '{"a":1}', isError: false }, { text: 'boom', isError: true }])
   expect(nestedCalls('plain text')).toBeNull()
   expect(nestedCalls('Script completed{"content":[')).toBeNull()
+})
+
+test('Code Mode output keeps every text block and separates it from the header', () => {
+  const snapshot = codeModeSnapshot('ignored', [
+    { type: 'text', text: 'Script completed' },
+    { type: 'text', text: '== ki.toml 行数: 1' },
+    { type: 'text', text: '== files\nNo files found' },
+    { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+  ], { cell_id: 'cell-1', status: 'completed', truncated: true })
+  expect(snapshot).toMatchObject({
+    status: 'completed', cellId: 'cell-1', truncated: true,
+    body: '== ki.toml 行数: 1\n== files\nNo files found',
+    calls: null,
+  })
+  expect(snapshot.images).toEqual([{ data: 'aGVsbG8=', mimeType: 'image/png' }])
+  expect(codeModePreview(snapshot, '')).toEqual({ text: '== ki.toml 行数: 1' })
+})
+
+test('Code Mode falls back to the concatenated result and reads running cell IDs', () => {
+  const completed = codeModeSnapshot('Script completedmodule ki', undefined, undefined)
+  expect(completed).toMatchObject({ status: 'completed', body: 'module ki', calls: null })
+  const running = codeModeSnapshot('Script running with cell ID cell-9', undefined, undefined)
+  expect(running).toMatchObject({ status: 'running', cellId: 'cell-9', body: '' })
+  expect(codeModePreview(running, '')).toEqual({ text: '#cell-9', status: 'running' })
+  const failed = codeModeSnapshot('Script failedout\nScript error:\nboom', undefined, { status: 'failed' })
+  expect(failed).toMatchObject({ status: 'failed', body: 'out', error: 'boom' })
+  expect(codeModePreview(failed, '')).toEqual({ text: 'boom' })
+})
+
+test('Code Mode source and preview understand function and freeform exec arguments', () => {
+  expect(codeModeSource({ code: 'const a = 1' })).toBe('const a = 1')
+  expect(codeModeSource({ input: 'await tools.read({})' })).toBe('await tools.read({})')
+  expect(codeModeSource('raw source')).toBe('raw source')
+  expect(codeModeSource({})).toBe('')
+  const empty = codeModeSnapshot('Script completed', [{ type: 'text', text: 'Script completed' }], { status: 'completed' })
+  expect(codeModePreview(empty, 'const a = 1')).toEqual({ text: 'const a = 1' })
 })
 
 test('coordination receipts and agent lists read the fields the tools publish', () => {

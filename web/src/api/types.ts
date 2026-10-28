@@ -580,7 +580,7 @@ export type Meta = {
 export type ChatNode = { turnId?: TurnId } & (
   | { kind: 'user'; id: string; parentId?: string; text: string; content: Content[]; ts?: number; origin?: string; clientRequestId?: string; completion?: Message['completion']; external?: Record<string, string>; truncated?: boolean; questionReply?: Message['questionReply'] }
   | { kind: 'assistant'; id: string; renderKey?: string; display?: DisplayRevision; parentId?: string; text: string; thinking?: string; usage?: Usage | null; cacheMiss?: CacheMiss; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string; cancelReason?: string; cancelSource?: string; images?: { data: string; mimeType: string }[]; stopReason?: string; ts?: number; truncated?: boolean }
-  | { kind: 'tool'; id: string; name: string; parentCallId?: string; cellId?: string; requestedToolName?: string; args?: unknown; result?: string; details?: unknown; isError?: boolean; durationMs?: number; startedAt?: number; running?: boolean; truncated?: boolean }
+  | { kind: 'tool'; id: string; name: string; parentCallId?: string; cellId?: string; requestedToolName?: string; args?: unknown; result?: string; outputBlocks?: Content[]; details?: unknown; isError?: boolean; durationMs?: number; startedAt?: number; running?: boolean; truncated?: boolean }
   | { kind: 'compaction'; id: string; summary: string; ts?: number; tokensBefore?: number; running?: boolean; failed?: boolean; empty?: boolean; unknown?: boolean; truncated?: boolean; lifecycle?: boolean }
   | { kind: 'cancellation'; id: string; runId?: string; reason?: string; source?: string; ts?: number; truncated?: boolean }
 )

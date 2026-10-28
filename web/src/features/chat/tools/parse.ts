@@ -1,4 +1,30 @@
-import type { ProcessSnapshot } from '../../../api/types'
+import type { Content, ProcessSnapshot } from '../../../api/types'
+
+export type NestedCall = { text: string; isError: boolean }
+
+export type CodeModeSnapshot = {
+  status: string
+  cellId: string
+  body: string
+  error: string
+  images: { data: string; mimeType: string }[]
+  truncated: boolean
+  calls: NestedCall[] | null
+}
+
+export type CodeModePreview = { text: string; calls?: number; status?: string }
+export type CodeModeStatusKey = 'tool.cell.completed' | 'tool.cell.running' | 'tool.cell.terminated' | 'tool.cell.failed'
+
+const CODE_STATUS_KEYS: Record<string, CodeModeStatusKey> = {
+  completed: 'tool.cell.completed',
+  running: 'tool.cell.running',
+  terminated: 'tool.cell.terminated',
+  failed: 'tool.cell.failed',
+}
+
+export function codeModeStatusKey(status: string): CodeModeStatusKey | null {
+  return CODE_STATUS_KEYS[status] ?? null
+}
 
 export type ExecSnapshot = {
   cmd: string
@@ -156,6 +182,157 @@ export function execSnapshotFromProcess(process: ProcessSnapshot): ExecSnapshot 
     startedAt: process.started_at,
     finishedAt: process.finished_at,
   }
+}
+
+const CODE_STATUSES = ['completed', 'terminated', 'failed'] as const
+
+function codeHeader(text: string): { status: string; cellId: string; rest: string } | null {
+  const running = /^Script running with cell ID ([^\s]+)/.exec(text)
+  if (running) {
+    const header = running[0]
+    return { status: 'running', cellId: running[1], rest: text.slice(header.length) }
+  }
+  for (const status of CODE_STATUSES) {
+    const header = `Script ${status}`
+    if (text.startsWith(header)) return { status, cellId: '', rest: text.slice(header.length) }
+  }
+  return null
+}
+
+export function codeModeSource(args: unknown): string {
+  if (typeof args === 'string') return args
+  const raw = object(args)
+  if (!raw) return ''
+  return str(raw.code) || str(raw.input)
+}
+
+export function nestedCalls(result: string): NestedCall[] | null {
+  const text = result.trim()
+  let rest = text
+  for (const prefix of ['Script completed', 'Script running']) {
+    if (rest.startsWith(prefix)) {
+      rest = rest.slice(prefix.length).trimStart()
+      break
+    }
+  }
+  if (!rest.startsWith('{') && !rest.startsWith('[')) return null
+  const calls: NestedCall[] = []
+  let index = 0
+  while (index < rest.length) {
+    while (index < rest.length && /\s/.test(rest[index])) index++
+    if (index >= rest.length) break
+    const end = jsonValueEnd(rest, index)
+    if (end < 0) return null
+    let value: unknown
+    try {
+      value = JSON.parse(rest.slice(index, end))
+    } catch {
+      return null
+    }
+    index = end
+    const envelope = value as { content?: { text?: string }[]; isError?: boolean }
+    const body = Array.isArray(envelope.content)
+      ? envelope.content.map(block => block?.text ?? '').join('')
+      : typeof value === 'string' ? value : JSON.stringify(value)
+    calls.push({ text: body, isError: !!envelope.isError })
+  }
+  return calls.length ? calls : null
+}
+
+function jsonValueEnd(text: string, start: number): number {
+  const open = text[start]
+  if (open !== '{' && open !== '[') return -1
+  const stack: string[] = [open === '{' ? '}' : ']']
+  let inString = false
+  let escaped = false
+  for (let i = start + 1; i < text.length; i++) {
+    const ch = text[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') {
+      inString = true
+      continue
+    }
+    if (ch === '{') stack.push('}')
+    else if (ch === '[') stack.push(']')
+    else if (ch === '}' || ch === ']') {
+      if (stack.pop() !== ch) return -1
+      if (stack.length === 0) return i + 1
+    }
+  }
+  return -1
+}
+
+export function codeModeSnapshot(result: string, blocks?: Content[] | null, details?: unknown): CodeModeSnapshot {
+  const meta = object(details)
+  let status = meta ? str(meta.status) : ''
+  let cellId = meta ? str(meta.cell_id) : ''
+  const truncated = meta ? bool(meta.truncated) : false
+  const images: { data: string; mimeType: string }[] = []
+  const texts: string[] = []
+
+  if (blocks?.length) {
+    for (const block of blocks) {
+      if (block.type === 'image') {
+        if (block.data) images.push({ data: block.data, mimeType: block.mimeType || 'image/png' })
+        continue
+      }
+      if (block.type && block.type !== 'text') continue
+      texts.push(block.text ?? '')
+    }
+  } else if (result) {
+    texts.push(result)
+  }
+
+  const outputs: string[] = []
+  texts.forEach((text, index) => {
+    if (index === 0) {
+      const found = codeHeader(text)
+      if (found) {
+        if (!status) status = found.status
+        if (!cellId) cellId = found.cellId
+        if (found.rest) outputs.push(found.rest)
+        return
+      }
+    }
+    outputs.push(text)
+  })
+
+  const joined = outputs.join('\n')
+  const errorMarker = 'Script error:\n'
+  const errorAt = joined.indexOf(errorMarker)
+  const body = errorAt < 0 ? joined : joined.slice(0, errorAt).replace(/\n+$/, '')
+  const error = errorAt < 0 ? '' : joined.slice(errorAt + errorMarker.length)
+  const calls = nestedCalls(body)
+
+  return {
+    status,
+    cellId,
+    body: calls ? '' : body,
+    error,
+    images,
+    truncated,
+    calls,
+  }
+}
+
+function firstNonEmpty(text: string): string {
+  return text.split('\n').find(line => line.trim()) ?? ''
+}
+
+export function codeModePreview(snapshot: CodeModeSnapshot, source: string): CodeModePreview {
+  const text = firstNonEmpty(snapshot.error || snapshot.body)
+  if (text) return { text }
+  if (snapshot.calls?.length) return { text: '', calls: snapshot.calls.length }
+  if (snapshot.status === 'running') return { text: snapshot.cellId ? `#${snapshot.cellId}` : '', status: 'running' }
+  if (snapshot.status === 'failed' || snapshot.status === 'terminated') return { text: '', status: snapshot.status }
+  const code = firstNonEmpty(source)
+  if (code) return { text: code }
+  return { text: '', status: snapshot.status || undefined }
 }
 
 export function diffFiles(details: unknown): DiffFile[] {

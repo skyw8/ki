@@ -5,7 +5,7 @@ import { ReadBlock } from './tools/ReadBlock'
 import { GrepHits, PathsFromGlob } from './tools/SearchResults'
 import { AgentList, AgentReceipt } from './tools/Receipts'
 import { CodeModeResult } from './tools/CodeModeResult'
-import { diffFiles, execSnapshotFromProcess, execSnapshotOf, globDetails, grepDetails, readDetails, syntheticEdit, writeDetails, writeDiff } from './tools/parse'
+import { codeModePreview, codeModeSnapshot, codeModeSource, codeModeStatusKey, diffFiles, execSnapshotFromProcess, execSnapshotOf, globDetails, grepDetails, readDetails, syntheticEdit, writeDetails, writeDiff } from './tools/parse'
 import { Fragment, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { flushSync } from 'react-dom'
 import { observeElementOffset, useVirtualizer } from '@tanstack/react-virtual'
@@ -219,18 +219,22 @@ function ToolRow({
   const globbed = name === 'glob' ? globDetails(node.details) : null
   const read = name === 'read' ? readDetails(node.details) : null
   const receipt = RECEIPT_TOOLS.has(name)
-  const CellResult = name === 'exec' || name === 'wait' ? CodeModeResult : null
+  const codeMode = name === 'exec' || name === 'wait'
+  const codeSource = name === 'exec' ? codeModeSource(node.args) : ''
+  const codeSnapshot = codeMode ? codeModeSnapshot(node.result ?? '', node.outputBlocks, node.details) : null
+  const codeCellId = name === 'wait' ? argStr(node.args, 'cell_id') : ''
   const editDiff = patchDiffs.length > 0 ? patchDiffs[0].diff : ''
   const patchDiff = name === 'apply_patch' && patchDiffs.length > 0 ? patchDiffs.map(file => file.diff).join('\n') : ''
   const state = node.running ? 'running' : node.isError ? 'error' : 'ok'
   const now = useNow(!!node.running)
-  const fail = state === 'error' && node.result && !terminal ? firstLine(node.result) : ''
+  const failText = codeSnapshot ? (codeSnapshot.error || firstLine(codeSnapshot.body)) : (node.result ?? '')
+  const fail = state === 'error' && failText && !terminal ? firstLine(failText) : ''
   const line = fail || summary
-  const bodyIn = name === 'write' ? content : name === 'exec_command' ? cmd : prettyArgs(node.args)
-  const structured = !!terminal || patchDiffs.length > 0 || !!grep || !!globbed || receipt || !!CellResult
+  const bodyIn = name === 'write' ? content : name === 'exec_command' ? cmd : codeMode ? '' : prettyArgs(node.args)
+  const structured = !!terminal || patchDiffs.length > 0 || !!grep || !!globbed || receipt || codeMode
   const expandable = !!(node.truncated || node.result || bodyIn || oldS || newS || desc || editDiff || patchDiff || structured)
   return (
-    <div className={`tool-row${node.isError ? ' error' : ''}`} data-testid="tool-card" data-tool={name} data-state={state}>
+    <div className={`tool-row${node.isError ? ' error' : ''}`} data-testid="tool-card" data-id={node.id} data-tool={name} data-state={state}>
       <div className="tool-row-h">
         <button
           type="button"
@@ -273,8 +277,15 @@ function ToolRow({
             <AgentList details={node.details} />
           ) : receipt ? (
             <AgentReceipt details={node.details} />
-          ) : CellResult ? (
-            <CellResult result={node.result ?? ''} />
+          ) : codeMode ? (
+            <CodeModeResult
+              result={node.result ?? ''}
+              blocks={node.outputBlocks}
+              details={node.details}
+              source={codeSource}
+              cellId={codeCellId}
+              running={node.running}
+            />
           ) : name === 'read' && read?.truncation ? (
             <ReadBlock text={node.result ?? ''} details={read.truncation} offset={offset} />
           ) : name === 'read' && node.result ? (
@@ -579,9 +590,15 @@ const ChatItem = memo(function ChatItem({
     const terminal = name === 'exec_command' || name === 'write_stdin'
       ? execSnapshotOf(n.details, n.result ?? '')
       : null
+    const codeMode = name === 'exec' || name === 'wait'
+    const codeSource = name === 'exec' ? codeModeSource(n.args) : ''
+    const codePreview = codeMode ? codeModePreview(codeModeSnapshot(n.result ?? '', n.outputBlocks, n.details), codeSource) : null
+    const codeStatusKey = codePreview?.status ? codeModeStatusKey(codePreview.status) : null
     const summary = name === 'exec_command'
       ? (argStr(n.args, 'description') || argStr(n.args, 'cmd'))
-      : path || firstLine(n.result || prettyArgs(n.args))
+      : codePreview
+        ? (codePreview.text || (codePreview.calls ? t('tool.cellCalls', { n: codePreview.calls }) : codeStatusKey ? t(codeStatusKey) : ''))
+        : path || firstLine(n.result || prettyArgs(n.args))
     const preview = terminal && n.isError
       ? (terminal.cmd ? `exit ${terminal.exitCode ?? '?'}: ${terminal.cmd}` : firstLine(terminal.output))
       : summary

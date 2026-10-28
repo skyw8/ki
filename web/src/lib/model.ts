@@ -1197,7 +1197,12 @@ function patchTool(s: ViewState, id: string, patch: Partial<Extract<ChatNode, { 
   const { outputBlocks, sourceBlocks, ...nodePatch } = patch
   s.nodes = s.nodes.map(n => {
     if (n.kind !== 'tool' || n.id !== id) return n
-    return { ...n, ...nodePatch, running: patch.running ?? n.running }
+    return {
+      ...n,
+      ...nodePatch,
+      ...(outputBlocks === undefined ? {} : { outputBlocks }),
+      running: patch.running ?? n.running,
+    }
   })
   s.records = s.records.map(r => {
     if (r.kind !== 'tool' || r.id !== id) return r
@@ -1479,9 +1484,9 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
       break
     case 'tool_execution_end':
       if (ev.toolCallId) {
-		const resultDetails = ev.result && typeof ev.result === 'object'
-		  ? ((ev.result as Record<string, unknown>).details ?? (ev.result as Record<string, unknown>).Details)
-		  : undefined
+		const result = ev.result && typeof ev.result === 'object' ? ev.result as Record<string, unknown> : undefined
+		const resultDetails = result?.details ?? result?.Details
+		const content = result?.content ?? result?.Content
 		patchTool(next, ev.toolCallId, {
           result: toolResultText(ev.result),
           isError: ev.isError,
@@ -1489,6 +1494,7 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
           durationMs: ev.durationMs,
           name: ev.toolName,
 		  details: resultDetails,
+		  ...(Array.isArray(content) ? { outputBlocks: content as Content[] } : {}),
         })
       }
       rememberTool(next, ev.toolCallId)
