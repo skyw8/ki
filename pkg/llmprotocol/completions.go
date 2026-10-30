@@ -253,12 +253,32 @@ func parseCompletionsSSE(_, data string, acc *Message) sseParseResult {
 				CachedTokens int `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
+		Error *struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    any    `json:"code"`
+		} `json:"error"`
 	}
 	if json.Unmarshal([]byte(data), &chunk) != nil {
 		return sseParseResult{err: errInvalidCompletionsSSEJSON}
 	}
 	if chunk.ID != "" {
 		acc.ResponseID = chunk.ID
+	}
+	if chunk.Error != nil {
+		message := chunk.Error.Message
+		if message == "" {
+			message = chunk.Error.Type
+		}
+		if message == "" && chunk.Error.Code != nil {
+			message = fmt.Sprint(chunk.Error.Code)
+		}
+		if message == "" {
+			message = "provider stream error"
+		}
+		acc.StopReason = "error"
+		acc.ErrorMessage = message
+		return sseParseResult{}
 	}
 	if chunk.Usage != nil {
 		cached := chunk.Usage.PromptCacheHit

@@ -24,7 +24,9 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 content / refusal / tool_calls（以及兼容旧网关的 `function_call`），按
 `tool_calls[].index` 累积 arguments。旧网关若在普通文本增量旁带空的 `function_call`
 占位对象（名称和参数均为空），会忽略该占位，避免生成空工具名调用。终止原因覆盖 `stop`、
-`length`、`tool_calls`、`function_call`、`content_filter`。
+`length`、`tool_calls`、`function_call`、`content_filter`。网关在已发出 200 的流里报告
+上游失败时会发顶层 `error` 对象；它按失败处理，不当成空回复。正常结束但没有任何
+text / thinking / toolCall 的空 assistant 由 loop 退避重试，而不是当作最终回答。
 
 ### Responses
 
@@ -239,8 +241,9 @@ toolResult 的 `details` 只供 session 和客户端使用；三种协议的请�
 
 确定性的请求/协议错误（普通 4xx、缺失终止事件、非法 SSE、请求体校验失败）不重试；网络
 错误、408/409/425/429、5xx，以及兼容网关明确返回的瞬时 `bad_response_status_code` 才进入
-loop 的退避重试。三种协议的请求体校验失败都在发送前返回 `nonRetryableError`，否则 loop
-会按退避静默重试约 60 秒，用户只看到「没有回复」。
+loop 的退避重试。流内 `error` 事件（网关已发 200 后上游失败）和正常结束但内容为空的
+assistant 也按可重试失败处理，避免把上游空流当成最终回答。三种协议的请求体校验失败都在
+发送前返回 `nonRetryableError`，否则 loop 会按退避静默重试约 60 秒，用户只看到「没有回复」。
 
 ## 压缩能力
 

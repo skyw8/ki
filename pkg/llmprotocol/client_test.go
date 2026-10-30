@@ -61,6 +61,31 @@ func TestClientStreamsChatCompletionsToolArguments(t *testing.T) {
 	}
 }
 
+func TestClientFailsOnCompletionsErrorEvent(t *testing.T) {
+	sse := protocolJSON(map[string]any{
+		"id": "chatcmpl_1",
+		"choices": []any{map[string]any{"delta": map[string]any{
+			"role": "assistant", "content": "",
+		}}},
+	}) + protocolJSON(map[string]any{
+		"error": map[string]any{
+			"message": "WorkBuddy restricted this account for unusual activity",
+			"type":    "api_error",
+		},
+	})
+	client := NewClient(APICompletions, "https://example.test", "key", protocolSSE(sse))
+	message, err := client.Stream(context.Background(), Request{Model: "model"}, nil)
+	if err == nil {
+		t.Fatal("in-stream error event was treated as a completed response")
+	}
+	if message.StopReason != "error" || !strings.Contains(message.ErrorMessage, "restricted this account") {
+		t.Fatalf("message: %+v", message)
+	}
+	if !strings.Contains(err.Error(), "restricted this account") {
+		t.Fatalf("err: %v", err)
+	}
+}
+
 func TestClientStreamsAnthropicIndexedBlocks(t *testing.T) {
 	sse := "event: message_start\n" + protocolJSON(map[string]any{
 		"type": "message_start", "message": map[string]any{"id": "msg_1"},

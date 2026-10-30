@@ -21,7 +21,10 @@ import (
 
 type EventType string
 
-var errAssistant = errors.New("assistant error")
+var (
+	errAssistant      = errors.New("assistant error")
+	errEmptyAssistant = errors.New("provider returned an empty assistant response")
+)
 
 const (
 	ProcessUpdated      EventType = "process_updated"
@@ -741,6 +744,11 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 			lastDelta = arrived
 			return nil
 		})
+		if err == nil && asst.StopReason != "error" && emptyAssistantResponse(asst) {
+			asst.StopReason = "error"
+			asst.ErrorMessage = errEmptyAssistant.Error()
+			err = errEmptyAssistant
+		}
 		if cfg.Telemetry != nil {
 			observation := modelTelemetry(req, asst, err, time.Since(started).Milliseconds())
 			observation.Attempt = attempt
@@ -882,6 +890,27 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 		_ = emit(Event{Type: MessageEnd, Message: &last})
 	}
 	return last, lastErr
+}
+
+func emptyAssistantResponse(message types.Message) bool {
+	if message.StopReason == "aborted" || len(message.ToolCalls()) > 0 {
+		return false
+	}
+	for _, content := range message.Content {
+		switch content.Type {
+		case "text":
+			if content.Text != "" {
+				return false
+			}
+		case "thinking":
+			if content.Text != "" || content.Thinking != "" {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 type nonRetryableStreamFailure interface {

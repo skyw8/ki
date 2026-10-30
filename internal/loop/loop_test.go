@@ -568,6 +568,68 @@ func TestZeroToolDurationIsSerialized(t *testing.T) {
 	}
 }
 
+type emptyReplyStreamer struct {
+	calls   int
+	empties int
+	text    string
+}
+
+func (s *emptyReplyStreamer) Stream(_ context.Context, _ Request, emit func(AssistantDelta) error) (types.Message, error) {
+	s.calls++
+	if s.calls <= s.empties {
+		return types.Message{Role: "assistant", StopReason: "stop"}, nil
+	}
+	m := types.Message{Role: "assistant", StopReason: "stop", Content: []types.Content{{Type: "text", Text: s.text}}}
+	if err := emit(AssistantDelta{Type: "text_delta", Delta: s.text, Partial: m}); err != nil {
+		return m, err
+	}
+	return m, nil
+}
+
+func TestRunRetriesEmptyAssistantResponse(t *testing.T) {
+	streamer := &emptyReplyStreamer{empties: 2, text: "recovered"}
+	var ends []*types.Message
+	_, err := Run(context.Background(), "hello", nil, Config{
+		Streamer: streamer, MaxRetries: 3, BaseDelay: time.Nanosecond,
+	}, func(event Event) error {
+		if event.Type == MessageEnd && event.Message != nil && event.Message.Role == "assistant" {
+			ends = append(ends, event.Message)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if streamer.calls != 3 {
+		t.Fatalf("stream calls = %d, want 3", streamer.calls)
+	}
+	if len(ends) != 1 || ends[0].Text() != "recovered" || ends[0].StopReason != "stop" {
+		t.Fatalf("assistant ends = %+v", ends)
+	}
+}
+
+func TestRunFailsAfterEmptyAssistantRetries(t *testing.T) {
+	streamer := &emptyReplyStreamer{empties: 10, text: "never"}
+	var last *types.Message
+	_, err := Run(context.Background(), "hello", nil, Config{
+		Streamer: streamer, MaxRetries: 2, BaseDelay: time.Nanosecond,
+	}, func(event Event) error {
+		if event.Type == MessageEnd && event.Message != nil && event.Message.Role == "assistant" {
+			last = event.Message
+		}
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "empty assistant response") {
+		t.Fatalf("err = %v", err)
+	}
+	if streamer.calls != 3 {
+		t.Fatalf("stream calls = %d, want 3", streamer.calls)
+	}
+	if last == nil || !last.IsError || last.StopReason != "error" || !strings.Contains(last.ErrorMessage, "empty assistant response") {
+		t.Fatalf("last assistant = %+v", last)
+	}
+}
+
 type overflowStreamer struct {
 	n        int
 	requests []Request
