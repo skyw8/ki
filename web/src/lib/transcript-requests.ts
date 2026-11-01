@@ -40,7 +40,6 @@ type Scope = {
   indexRefresh?: { frontier?: string }
   recovery?: Promise<void>
   turns: Map<string, Job<boolean>>
-  keeps: Map<string, Job<boolean>>
   bodies: Map<string, BodyRequest>
   pending: Set<string>
   hydrating: boolean
@@ -94,7 +93,7 @@ export class TranscriptRequests {
     if (store.sessionId !== id) return
     const s: Scope = {
       ticket: store.capture('body'), abort: new AbortController(), jobs: new Set(), unsubscribe: () => {},
-      turns: new Map(), keeps: new Map(), bodies: new Map(), pending: new Set(),
+      turns: new Map(), bodies: new Map(), pending: new Set(),
       hydrating: false, protectedIds: new Set(), projections: new Map(), projectionQueued: false,
     }
     this.scope = s
@@ -175,7 +174,7 @@ export class TranscriptRequests {
       try {
         const compact = presentation.mode === 'compact'
         const out = await wait(api.get(id, { before: ticket.oldestId, limit,
-          view: compact ? 'compact' : undefined, keep: compact ? presentation.keep : undefined,
+          view: compact ? 'compact' : undefined,
           signal: job.abort.signal }), job.abort.signal)
         if (!await this.gate(s, job) || !store.canCommit(ticket)) return null
         if (out.hasMore && (!out.entries?.length || !out.oldestId || out.oldestId === ticket.oldestId)) {
@@ -190,7 +189,7 @@ export class TranscriptRequests {
           try {
             const compact = presentation.mode === 'compact'
             const out = await wait(api.get(id, { view: compact ? 'compact' : undefined,
-              keep: compact ? presentation.keep : undefined, signal: job.abort.signal }), job.abort.signal)
+              signal: job.abort.signal }), job.abort.signal)
             if (await this.gate(s, job)) {
               job.committing = true
               store.commit(recovery, out, { rejectedCursor: ticket.oldestId })
@@ -211,7 +210,7 @@ export class TranscriptRequests {
 
   private convert(s: Scope): Promise<SessionDetail | null> {
     if (s.page) return s.page.promise
-    const { store, api, id, presentation, onRecoverNeeded } = this.options
+    const { store, api, id, onRecoverNeeded } = this.options
     const outer = this.job(s, store.capture('body'), null as SessionDetail | null)
     this.setStatus({ loadingOlder: true, olderError: false })
     let reconciled = false
@@ -226,7 +225,7 @@ export class TranscriptRequests {
         s.page = job
         try {
           const page = await wait(api.get(id, { turn: ticket.oldestId, view: 'compact',
-            keep: presentation.keep, signal: job.abort.signal }), job.abort.signal)
+            signal: job.abort.signal }), job.abort.signal)
           if (!await this.gate(s, job)) {
             if (this.valid(s) && !store.canCommit(ticket)) continue
             return null
@@ -299,31 +298,6 @@ export class TranscriptRequests {
     return job.promise
   }
 
-  private requestKeep(s: Scope, turnId: string): Promise<boolean> {
-    const existing = s.keeps.get(turnId)
-    if (existing) return existing.promise
-    const { store, api, id, presentation, onRecoverNeeded } = this.options
-    const job = this.job(s, store.capture('keep', turnId), false)
-    s.keeps.set(turnId, job)
-    void (async () => {
-      try {
-        for (let attempt = 0; attempt < 2 && this.valid(s); attempt++) {
-          if (!id || !store.current.compactTurns?.some(turn => turn.id === turnId)) return false
-          const ticket = job.ticket = store.capture('keep', turnId)
-          const page = await wait(api.get(id, { turn: turnId, view: 'compact',
-            keep: presentation.keep, signal: job.abort.signal }), job.abort.signal)
-          if (!await this.gate(s, job)) return false
-          if (store.commit(ticket, page)) return true
-          if (attempt || !onRecoverNeeded) return false
-          await wait(this.recover(s), job.abort.signal)
-        }
-      } catch {}
-      finally { if (s.keeps.get(turnId) === job) s.keeps.delete(turnId) }
-      return false
-    })().then(job.resolve)
-    return job.promise
-  }
-
   private recover(s: Scope): Promise<void> {
     if (s.recovery) return s.recovery
     const task = wait(Promise.resolve().then(() => {
@@ -359,7 +333,6 @@ export class TranscriptRequests {
         if (s.projections.get(`turn:${turn.id}`) === key) continue
         s.projections.set(`turn:${turn.id}`, key)
         if (presentation.mode === 'detailed') void this.requestTurn(turn.id)
-        else if (presentation.keep > turn.visibleNodeIds.length - 1) void this.requestKeep(s, turn.id)
       }
     })
   }

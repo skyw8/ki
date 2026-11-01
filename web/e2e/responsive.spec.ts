@@ -11,6 +11,10 @@ import { openContextCategory, openContextItem } from './context.ts'
 
 test.describe.configure({ mode: 'parallel' })
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('ki-message-view', 'detailed'))
+})
+
 test.describe('drawer menu keyboard ownership', () => {
   test.use({ viewport: { width: 320, height: 568 }, isMobile: true, hasTouch: true })
 

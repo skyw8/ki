@@ -40,14 +40,14 @@ function setup(initial: SessionDetail, options: Partial<ConstructorParameters<ty
   const store = new TranscriptStore(loadHistory(initial), 's')
   const api = new Transport()
   const history = new TranscriptRequests({
-    api, id: 's', store, presentation: { mode: 'detailed', keep: 1 },
+    api, id: 's', store, presentation: { mode: 'detailed' },
     beforeCommit: async () => {}, ...options,
   })
   controllers.push(history)
   history.start()
   return { store, api, history }
 }
-const compact = { mode: 'compact', keep: 0 } as const
+const compact = { mode: 'compact' } as const
 function selectedVisible(): SessionDetail {
   const out = detail('selected', 'selected-a1')
   return { ...out, entries: [entry('u', undefined, 'user'), entry('selected-a1', 'u')],
@@ -63,7 +63,7 @@ test('conversion rejected at the gesture boundary retries the current leaf witho
   let gates = 0
   const { api, store, history } = setup({
     id: 's', entries, oldestId: 'a2', hasMore: true, leafId: 'a3', running: true,
-  }, { presentation: { mode: 'compact', keep: 1 }, beforeCommit: () => ++gates === 1 ? gate.promise : Promise.resolve() })
+  }, { presentation: { mode: 'compact' }, beforeCommit: () => ++gates === 1 ? gate.promise : Promise.resolve() })
   const summary: CompactTurn = {
     ...detail('selected').compactTurns![0], id: 'u1', tailId: 'a3', entryCount: 4,
     entryIds: ['u1', 'a3'], visibleNodeIds: ['u1', 'a3'], hiddenCount: 2, stepCount: 3,
@@ -275,76 +275,6 @@ test('nonadvancing page is an error, not a silently exhausted transcript', async
   expect(store.current.hasMore).toBe(true)
   expect(store.current.oldestId).toBe('b')
   expect(history.getSnapshot().olderError).toBe(true)
-})
-
-for (const recoverBeforeReply of [false, true]) {
-  test(`keep reprojection reconciles then retries once (${recoverBeforeReply ? 'local frontier changed' : 'server selected a new branch'})`, async () => {
-    let recoveries = 0
-    let store!: TranscriptStore
-    const result = setup(detail('oldPage', 'old-a2'), {
-      presentation: { mode: 'compact', keep: 1 },
-      onRecoverNeeded: async () => {
-        recoveries++
-        store.commit(store.capture('tail'), detail('selected', 'selected-a1'))
-      },
-    })
-    store = result.store
-    const { api } = result
-    await settle()
-    expect(api.reads).toHaveLength(1)
-    if (recoverBeforeReply) store.commit(store.capture('tail'), detail('selected', 'selected-a1'))
-    api.reads[0].result.resolve(recoverBeforeReply ? detail('oldPage', 'old-a2') : selectedVisible())
-    await settle()
-    expect(recoveries).toBe(1)
-    expect(api.reads).toHaveLength(2)
-    expect(store.current.compactTurns?.map(turn => turn.tailId)).toEqual(['selected-a1'])
-    expect(store.current.nodes.map(node => node.id)).toEqual(['u'])
-    api.reads[1].result.resolve(selectedVisible())
-    await settle()
-    expect(store.current.nodes.map(node => node.id)).toEqual(['u', 'selected-a1'])
-    expect(store.current.compactTurns?.map(turn => turn.tailId)).toEqual(['selected-a1'])
-    expect(api.reads).toHaveLength(2)
-  })
-}
-
-test('keep recovery retry is bounded when the server still returns another target', async () => {
-  let recoveries = 0
-  const { api, store } = setup(detail('oldPage', 'old-a2'), {
-    presentation: { mode: 'compact', keep: 1 }, onRecoverNeeded: async () => { recoveries++ },
-  })
-  await settle()
-  api.reads[0].result.resolve(selectedVisible())
-  await settle()
-  api.reads[1].result.resolve(selectedVisible())
-  await settle()
-  expect(api.reads).toHaveLength(2)
-  expect(recoveries).toBe(1)
-  expect(store.current.compactTurns?.[0].tailId).toBe('old-a2')
-})
-
-test('concurrent stale keep responses share one recovery before their bounded retries', async () => {
-  const recovered = deferred<void>()
-  let recoveries = 0
-  const { api, store } = setup(detail('oldTail', 'y-answer'), {
-    presentation: { mode: 'compact', keep: 1 }, onRecoverNeeded: () => { recoveries++; return recovered.promise },
-  })
-  await settle()
-  expect(api.reads).toHaveLength(4)
-  for (const call of api.reads) {
-    const turn = store.current.compactTurns!.find(turn => turn.id === call.opts?.turn)!
-    call.result.resolve({ id: 's', compactTurns: [{ ...turn, tailId: `new-${turn.id}` }], entries: [] })
-  }
-  await settle()
-  expect(recoveries).toBe(1)
-  expect(api.reads).toHaveLength(4)
-  store.commit(store.capture('tail'), detail('oldTail', 'y-answer'))
-  recovered.resolve()
-  await settle()
-  expect(api.reads).toHaveLength(8)
-  for (const call of api.reads.slice(4)) call.result.resolve(detail('oldTail', 'y-answer'))
-  await settle()
-  expect(api.reads).toHaveLength(8)
-  expect(recoveries).toBe(1)
 })
 
 test('detailed mode automatically retries expansion canceled by a same-tail recovery', async () => {

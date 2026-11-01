@@ -129,11 +129,9 @@ assistant `message_end` 可在外层事件携带 `cacheMiss: {missedTokens, miss
 同一投影。它是 view-only 诊断，不属于 `message` / provider `Usage`，也不写入 JSONL。
 WebUI 直接按 entry id 展示该值，不从稀疏历史窗口猜测前序 baseline。
 
-Runtime user-role 通知不占 compact 回复的 `keep` 名额，但仍可折叠：只用正常 assistant 和
-按调用 ID 去重的 tool 确定首个保留或 live 回复的边界，边界之前的通知随旧回复一起进入
-`hiddenCount`，边界及之后的通知按持久化顺序显示。因此 `keep=1` 不会让尾随通知挤掉最后
-assistant，也不会让中途通知全部展开；`keep=0` 且无 live 回复时折叠全部通知和普通回复。
-压缩/中止等生命周期元数据始终单独显示。
+Runtime user-role 通知和其他非人工节点一样折叠：compact 只按内容保留正文 ≥300 字符的
+assistant 回复以及人工 input；工具调用/结果、较短回复和 runtime 通知都计入 `hiddenCount`。
+正在运行的节点始终显示，压缩/中止等生命周期元数据始终单独显示。
 
 Code Mode 的嵌套执行是例外：复用 `tool_execution_start/update/end`，但带 `parentCallId`、
 `cellId` 以及父进程生成的 `toolCallId`，以有界结构化 details 先持久化，再携带该审计 entry

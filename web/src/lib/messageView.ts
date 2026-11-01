@@ -7,33 +7,23 @@ import type { ChatTurn } from './transcriptIdentity'
 
 export type MessageViewMode = 'detailed' | 'compact'
 
-export type MessageView = { mode: MessageViewMode; keep: number }
+export type MessageView = { mode: MessageViewMode }
 
-export const DEFAULT_COMPACT_KEEP = 1
-export const MAX_COMPACT_KEEP = 20
+export const COMPACT_VISIBLE_TEXT_CHARS = 300
 
 const MODE_KEY = 'ki-message-view'
-const KEEP_KEY = 'ki-message-view-keep'
-
-export function clampCompactKeep(n: number): number {
-  if (!Number.isFinite(n)) return DEFAULT_COMPACT_KEEP
-  return Math.min(MAX_COMPACT_KEEP, Math.max(0, Math.round(n)))
-}
 
 export function loadMessageView(): MessageView {
   try {
-    const mode = localStorage.getItem(MODE_KEY) === 'detailed' ? 'detailed' : 'compact'
-    const raw = localStorage.getItem(KEEP_KEY)
-    return { mode, keep: raw == null ? DEFAULT_COMPACT_KEEP : clampCompactKeep(Number(raw)) }
+    return { mode: localStorage.getItem(MODE_KEY) === 'detailed' ? 'detailed' : 'compact' }
   } catch {
-    return { mode: 'compact', keep: DEFAULT_COMPACT_KEEP }
+    return { mode: 'compact' }
   }
 }
 
 export function saveMessageView(view: MessageView): void {
   try {
     localStorage.setItem(MODE_KEY, view.mode)
-    localStorage.setItem(KEEP_KEY, String(clampCompactKeep(view.keep)))
   } catch {
   }
 }
@@ -47,7 +37,6 @@ export function detailedItems(nodes: ChatNode[]): ChatRenderItem[] {
 }
 
 export type FoldOptions = {
-  keep: number
   expanded?: ReadonlySet<string>
   summaries?: CompactTurn[]
   loadedTurnIds?: string[]
@@ -57,34 +46,30 @@ function isLive(n: ChatNode): boolean {
   return nodeLive(n)
 }
 
-function isKeepReply(n: ChatNode): boolean {
-  return n.kind === 'tool' ||
-    (n.kind === 'assistant' && n.stopReason !== 'aborted')
+function isVisibleReply(n: ChatNode): boolean {
+  return n.kind === 'assistant' && [...n.text].length >= COMPACT_VISIBLE_TEXT_CHARS
 }
 
 function isFoldable(n: ChatNode): boolean {
-  return isKeepReply(n) || (n.kind === 'user' && !isHumanPrompt(n.origin))
+  return (n.kind === 'tool' || (n.kind === 'assistant' && n.stopReason !== 'aborted')) ||
+    (n.kind === 'user' && !isHumanPrompt(n.origin))
 }
 
-function hiddenReplyIds(rest: ChatNode[], keep: number): Set<string> {
+function hiddenReplyIds(rest: ChatNode[]): Set<string> {
   const foldable = rest.filter(isFoldable)
-  const replies = foldable.filter(isKeepReply)
-  const firstKept = keep > 0 ? replies[Math.max(0, replies.length - keep)] : undefined
-  const cut = firstKept ? foldable.indexOf(firstKept) : foldable.length
   const live = foldable.findIndex(isLive)
-  const hidden = live < 0 ? cut : Math.min(cut, live)
-  return new Set(foldable.slice(0, hidden).map(n => n.id))
+  const hidden = foldable.filter((n, i) => (live < 0 || i < live) && !isVisibleReply(n))
+  return new Set(hidden.map(n => n.id))
 }
 
 export function foldReplies(nodes: ChatNode[], opts: FoldOptions): ChatRenderItem[] {
   const turns = groupTurns(nodes)
-  const keep = clampCompactKeep(opts.keep)
   const summaries = new Map(opts.summaries?.map(t => [t.id, t]))
   const loaded = new Set(opts.loadedTurnIds)
   const out: ChatRenderItem[] = []
   turns.forEach(turn => {
     const rest = turn.nodes.filter(n => n !== turn.user)
-    const hiddenIds = hiddenReplyIds(rest, keep)
+    const hiddenIds = hiddenReplyIds(rest)
     const hidden = hiddenIds.size
     const summary = !loaded.has(turn.id) ? summaries.get(turn.id) : undefined
     const observed = new Set(rest.map(n => n.id))

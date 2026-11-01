@@ -232,7 +232,7 @@ compact、展开、运行和结束统一由 `projectTurnStats` 投影：服务�
 快照已覆盖的本地节点；展开不会重复加计，运行结束不会用旧快照覆盖新结果。当前工具批次的
 `toolStates` 提供被隐藏调用的身份及结果状态；`assistantAt` 提供已完成模型步骤边界。并行
 工具的任意兄弟节点先结束都不能把其它调用判为陈旧。每轮只挂一条统计，挂在**最后一个渲染
-item**（可以是 keep=0 的折叠行），而非必须存在的最后一个原始节点。汇总线在同一个虚拟 item
+item**（可以是折叠行），而非必须存在的最后一个原始节点。汇总线在同一个虚拟 item
 里追加，`jumpToId`/视口高亮仍按节点索引。窄屏（`max-width: 760px`）隐藏两侧 hairline，改成
 整宽分隔线 + 居中的统计。
 
@@ -240,19 +240,19 @@ item**（可以是 keep=0 的折叠行），而非必须存在的最后一个原
 
 #### 折叠
 
-compact 消息显示（见设置）**在 turn 内**折叠：每个 turn 的用户气泡始终保留，其后只留最近 N
-条回复，之间的回复（长 turn 的工具往返）由 `lib/messageView.ts` 的 `foldReplies` 折成该 turn
-内的一行，位于气泡与该 turn 可见回复之间；点该行就地展开，不重排时间线。
+compact 消息显示（见设置）**在 turn 内**折叠：每个 turn 的用户气泡始终保留；只有正文长度
+≥300 个字符的 assistant 回复保留正文，工具调用、工具结果、较短回复以及 subagent 等
+runtime user-role 消息由 `lib/messageView.ts` 的 `foldReplies` 折成该 turn 内的一行，位于
+气泡与该 turn 可见回复之间；点该行就地展开，不重排时间线。
 
 reading 或更早轮的操作锚定该行，原本 following 的最新人工轮继续跟随，`jumpToId` 落到折叠
 范围内会先自动展开再滚动（行本身带首个被折叠节点的 `data-msg-id`）。短列表和长列表使用
 同一个虚拟化实例与 DOM 外壳，折叠、分页或第 48 个节点不再切换列表结构。
 
 展开/收起保留显式意图：reading 不因几何贴底恢复 following；只有原本 following 且操作最新
-人工轮时继续跟随，更早轮转为 reading。仍在流式/运行中的节点永不折叠，但**运行中的最新
-turn 也照常折叠**（实测一个在跑的 turn 有 61 个回复节点，折叠后只剩 2 行；这也是重新进入
-运行中会话慢的一半原因）。真实运行节点可以突破 N 的折叠边界；陈旧标记由同一调用的持久化
-结果、下一模型请求或服务器 `assistantAt` 边界清理，而不是按兄弟节点顺序猜测。
+人工轮时继续跟随，更早轮转为 reading。仍在流式/运行中的节点永不折叠，运行中的最新 turn
+也按同一内容规则折叠；陈旧标记由同一调用的持久化结果、下一模型请求或服务器
+`assistantAt` 边界清理，而不是按兄弟节点顺序猜测。
 
 #### 停止与取消
 
@@ -263,7 +263,7 @@ WebUI 的 abort 请求标记 `source=webui`。`run_aborted` 立即在消息列�
 
 旧 transcript 的 unparented sideband 无法安全归属分支，WebUI 改由 branch-correct 的 aborted
 assistant 合成通用取消行。取消行和 aborted assistant 与 compaction 行一样永不进入 compact
-折叠，也不占 `keep` 名额。
+折叠。
 
 #### 压缩状态
 
@@ -272,7 +272,7 @@ assistant 合成通用取消行。取消行和 aborted assistant 与 compaction 
 图，重放和正文补全不会复制或丢失状态。`entryId` 仍指成功提交的 checkpoint；加载 checkpoint
 后由摘要替换状态行，不重复显示。empty/failed 没有 checkpoint，也保留其持久化终态。
 
-生命周期行始终独立、不占 keep、不增加模型步数；正文缓存回收保留状态事实，只有 index 尚无
+生命周期行始终独立、不增加模型步数；正文缓存回收保留状态事实，只有 index 尚无
 状态时显示本地化的待加载文案并补全，不能冒充成功。权威 idle 或后续实际请求使未结束的历史
 start 停止转圈，不能因后来的 run busy 而复活。手动 `/compact` 没有 run stream，进度仍由现有
 push 流（`GET /v1/events`，session sideband）传递。
@@ -462,13 +462,13 @@ Agents 页的「上下文窗口上限」写 `toggles.json` 的 `agents.contextWi
 并提示范围，保存成功以 toast 确认。
 
 Message 页还有「消息显示」detailed / compact：未保存偏好、偏好值无效或浏览器存储不可用时默认
-compact，保留已保存的 detailed / compact 选择。compact 下每个 turn 的人工输入照常显示，只保留
-该 turn 最近 N 条回复，subagent 等 runtime user-role 消息和其他更早回复一起折叠成一行（带
-折叠条数与末条预览），N 默认 1、范围 0–20。点折叠行可就地展开；最新人工 turn 的折叠行仅在
-原本已 following 时保持跟随，始终钉住该 turn 最新那条回复的底部，而不是钉折叠行本身——
-展开引入的中间行不是 append，另有一次显式钉尾把新增行落到尾部，所以折叠行会随最新消息
-一起被移出虚拟窗口；更早的折叠行则暂停跟随并锚定该行原地不动。这是本机显示偏好，和主题/
-语言一样只写 `localStorage['ki-message-view']` / `['ki-message-view-keep']`，不落 server。
+compact，保留已保存的 detailed / compact 选择。compact 下每个 turn 的人工输入照常显示；只有
+正文长度 ≥300 个字符的 assistant 回复保留，工具调用/结果、较短回复和 subagent 等 runtime
+user-role 消息一起折叠成一行（带折叠条数与末条预览）。点折叠行可就地展开；最新人工 turn 的
+折叠行仅在原本已 following 时保持跟随，始终钉住该 turn 最新那条回复的底部，而不是钉折叠行
+本身——展开引入的中间行不是 append，另有一次显式钉尾把新增行落到尾部，所以折叠行会随最新
+消息一起被移出虚拟窗口；更早的折叠行则暂停跟随并锚定该行原地不动。这是本机显示偏好，和
+主题/语言一样只写 `localStorage['ki-message-view']`，不落 server。
 
 仍在流式或运行的节点始终展开（进行中的工作不会被折起来），该 turn 其余回复照常折叠。
 Tools 始终列出所有可全局开关的内置工具；`write` / `edit` 与 `apply_patch` 即使不适用于当前
@@ -820,15 +820,14 @@ ready 与 run EOF，经 `TranscriptStore` 原子接纳后投影；运行状态�
 - **执行状态独立于正文加载**：工具状态按 toolCallId 覆盖 node 和 trajectory record；普通正文
   补全不能结束任务，也不能丢掉耗时、错误或输出。服务器已落盘结果优先；后续模型步骤证明
   之前整批工具已经结束。
-- **统计与显示解耦**：快照与本地重叠按身份去重，重叠重建共享索引并只遍历该轮。keep=0、
+- **统计与显示解耦**：快照与本地重叠按身份去重，重叠重建共享索引并只遍历该轮。折叠、
   展开、收起不改变总数和计时。`cumulativeElapsedMs` 是冻结的历史前缀，当前轮延长不能从
   过去耗时里减掉；新 prompt 确认 ID 后仍从该 prompt 的服务端时间戳起算。
 - **折叠计数只数回复节点**：`hiddenCount` 包含被折叠的 assistant、按调用 ID 去重的 tool 和
-  runtime user 消息，不含 compaction、取消行及 aborted assistant。keep 只数正常
-  assistant/tool，不能将「可折叠」与「占 keep 名额」混为同一分类；可见区从第一条保留/运行中
-  的真实回复起，旧通知不会刷屏。`visibleNodeIds` 可含生命周期元数据，因此快照总数和重叠
-  扣除按可折叠分类统计。无人工输入 turn 的隐藏 runtime 指令锚点只计一次。刷新、逐条补全和
-  展开不能制造额外折叠条目。
+  runtime user 消息，不含 compaction、取消行及 aborted assistant。可见性只看内容：正文
+  ≥300 字符的 assistant 回复与运行中节点保留，`visibleNodeIds` 可含生命周期元数据，因此
+  快照总数和重叠扣除按可折叠分类统计。无人工输入 turn 的隐藏 runtime 指令锚点只计一次。
+  刷新、逐条补全和展开不能制造额外折叠条目。
 
 ### 统一身份、载荷与响应权限
 
@@ -867,7 +866,6 @@ turn 可以展开节点，全文仍按需加载；helper 不能证明完整。�
 | tail / 恢复 | 当前 epoch/frontier；SSE/新输入 revision 决定运行状态新鲜度 | 确认 active leaf、窗口/摘要与 runtime；撤销旧投影权限。idle 响应与已提交 busy 不一致时继续确认，不能退出后留下无人监听的 busy |
 | older page | 当前 epoch/frontier 且捕获的 oldest/hasMore 未改变 | 本窗口历史及游标；陈旧页不能夹带摘要污染新分支 |
 | compact 转换 | 上述边界加 captured leaf；响应各 turn tail 已在已知 canonical 活跃路径上 | 当前分支展示投影；未知/sibling tail 必须先走权威恢复，不能自行选分支 |
-| keep 重投影 | 当前 epoch/frontier、同一 TurnId 与 tail | 同一快照的可见节点；失配至多合并一次恢复并有限重试 |
 | turn 展开 | 当前 epoch/frontier、目标 tail 未改变且响应包含它 | 整轮节点一次提交；不把其它分支的下载标为当前 turn 完整 |
 | index | 当前 epoch | 树身份元数据；不能改正文覆盖、active leaf 或分页游标 |
 | body | 当前 epoch、canonical entry ID | 正文补全；没有选择分支、确认执行终态或推进游标的权力 |

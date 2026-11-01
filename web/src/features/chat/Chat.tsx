@@ -21,7 +21,7 @@ import type { Client } from '../../api/client'
 import { useI18n } from '../../i18n/index'
 import { Markdown } from '../markdown/Markdown'
 import { cacheHitRate, cacheMisses, formatDuration, formatTokens, formatTokensPerSecond, isHumanPrompt, nodeLive, projectTurnStats, reconcileUserNodes, requestTitle, type TurnStats } from '../../lib/model'
-import { DEFAULT_COMPACT_KEEP, detailedItems, foldReplies, groupTurns, type ChatRenderItem, type ChatTurn, type MessageViewMode } from '../../lib/messageView'
+import { detailedItems, foldReplies, groupTurns, type ChatRenderItem, type ChatTurn, type MessageViewMode } from '../../lib/messageView'
 import { COLLAPSED_TOOL_HEIGHT, rememberRowHeight, rowBodyToken, rowHeightEstimate, sameRowRevision, UNKNOWN_WIDTH, type RowHeightRevision } from '../../lib/rowHeight'
 import { copyText } from '../../lib/clipboard'
 import type { CacheMiss, ChatNode, CompactTurn, ProcessSnapshot } from '../../api/types'
@@ -620,12 +620,11 @@ const ChatItem = memo(function ChatItem({
   return <Cancellation node={n} />
 })
 
-export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, controlRef, onHydrate, processes, onOpenFile, onShowBranches, onVisibleEntries, jumpToId, navigationPending, onJumped, onActiveRequest, onAtBottom, onReadIntent, onLoadOlder, hasMore, olderError, turnBase = 0, mode = 'detailed', keep = DEFAULT_COMPACT_KEEP, loadingOlder, compactTurns, loadedTurnIds, onLoadTurn }: Omit<ChatItemProps, 'node' | 'missed' | 'branchIndex' | 'branchTotal' | 'openTools' | 'onToggleTool'> & {
+export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, controlRef, onHydrate, processes, onOpenFile, onShowBranches, onVisibleEntries, jumpToId, navigationPending, onJumped, onActiveRequest, onAtBottom, onReadIntent, onLoadOlder, hasMore, olderError, turnBase = 0, mode = 'detailed', loadingOlder, compactTurns, loadedTurnIds, onLoadTurn }: Omit<ChatItemProps, 'node' | 'missed' | 'branchIndex' | 'branchTotal' | 'openTools' | 'onToggleTool'> & {
   branches?: Record<string, { index: number; total: number }>
   nodes: ChatNode[]
   turnBase?: number
   mode?: MessageViewMode
-  keep?: number
   scrollRef: RefObject<HTMLDivElement | null>
   controlRef?: React.Ref<TranscriptScroll>
   onVisibleEntries?: (ids: string[]) => void
@@ -705,7 +704,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
       return next
     })
   }, [scrollRef, navigation.read, navigation.latest, onReadIntent, folds, compactTurns, loadedTurnIds, loadingFolds, onLoadTurn, nodes])
-  const items = useMemo(() => mode === 'compact' ? foldReplies(nodes, { keep, expanded: folds, summaries: compactTurns, loadedTurnIds }) : detailedItems(nodes), [mode, nodes, keep, folds, compactTurns, loadedTurnIds])
+  const items = useMemo(() => mode === 'compact' ? foldReplies(nodes, { expanded: folds, summaries: compactTurns, loadedTurnIds }) : detailedItems(nodes), [mode, nodes, folds, compactTurns, loadedTurnIds])
   const turns = useMemo(() => {
     const stats = projectTurnStats(nodes, turnBase, compactTurns)
     const owner = new Map<string, string>()

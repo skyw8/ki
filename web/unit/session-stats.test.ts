@@ -631,7 +631,7 @@ test('applyTail drops a stale live node a newer on-screen node continued past', 
 })
 
 
-test('keep=0 recognizes live starts already counted by the hidden pending batch', () => {
+test('a fully folded turn recognizes live starts already counted by the hidden pending batch', () => {
   const { entries, summary } = compactFixture()
   const hidden: CompactTurn = { ...summary, tailId: 'a2', entryIds: ['u1'], visibleNodeIds: ['u1'], omittedNodeIds: [], hiddenCount: 4, toolStates: [{ id: 't2', finished: false }] }
   let s = loadHistory({ entries: [entries[0]], compactTurns: [hidden], leafId: 'a2', running: true } as SessionDetail)
@@ -640,7 +640,7 @@ test('keep=0 recognizes live starts already counted by the hidden pending batch'
 })
 
 
-test('keep=0 recovery retires a hidden old batch using its server assistant boundary', () => {
+test('a fully folded turn retires a hidden old batch using its server assistant boundary', () => {
   const { entries, summary } = compactFixture()
   let s = loadHistory({ entries: entries.slice(0, 2), leafId: 'a1', running: true } as SessionDetail)
   s = applyEvent(s, { type: 'tool_execution_start', toolCallId: 't1', toolName: 'Read', timestamp: 2_100 })

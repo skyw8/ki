@@ -51,7 +51,6 @@ async function fixture(page: Page, tailGate = Promise.resolve()) {
   })
   await page.addInitScript(({ id }) => {
     localStorage.setItem('ki-message-view', 'detailed')
-    localStorage.setItem('ki-message-view-keep', '1')
     const scope = window as unknown as StreamControls
     const original = window.fetch
     window.fetch = async (...args) => {

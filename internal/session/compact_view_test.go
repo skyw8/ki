@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"ki/internal/types"
 )
@@ -72,7 +73,7 @@ func TestBuildStatsActiveBranchAndMetadata(t *testing.T) {
 	if got := BuildStats(metadata, "tail"); got != want {
 		t.Fatalf("metadata stats: got %+v want %+v", got, want)
 	}
-	page := BuildCompact(entries, "tail", "", 0)
+	page := BuildCompact(entries, "tail", "")
 	if got := page.Turns[0].Stats; got.DecodeTokens != 50 || got.DecodeMS != 1500 || got.TPS == nil || *got.TPS != float64(50)/1.5 {
 		t.Fatalf("turn decode totals: %+v", got)
 	}
@@ -116,19 +117,17 @@ func TestCompactLifecycleIsDurableUnfoldedMetadata(t *testing.T) {
 				details["entryId"] = parent
 			}
 			entries = append(entries, Entry{ID: "end", ParentID: parent, Type: "compaction_end", Details: details})
-			for _, keep := range []int{0, 1, 20} {
-				page := BuildCompact(entries, "end", "", keep)
-				turn := page.Turns[0]
-				if turn.HiddenCount != max(0, 1-keep) || turn.StepCount != steps || turn.Stats.Steps != steps {
-					t.Fatalf("lifecycle inflated counts for keep=%d: %+v", keep, turn)
-				}
-				if !slices.Contains(turn.VisibleNodeIDs, row) || slices.Contains(turn.VisibleNodeIDs, "start") {
-					t.Fatalf("missing/duplicate lifecycle row: %+v", turn.VisibleNodeIDs)
-				}
-				for _, id := range []string{"start", "end"} {
-					if !slices.Contains(turn.EntryIDs, id) {
-						t.Fatalf("lost durable lifecycle %s", id)
-					}
+			page := BuildCompact(entries, "end", "")
+			turn := page.Turns[0]
+			if turn.HiddenCount != 1 || turn.StepCount != steps || turn.Stats.Steps != steps {
+				t.Fatalf("lifecycle inflated counts: %+v", turn)
+			}
+			if !slices.Contains(turn.VisibleNodeIDs, row) || slices.Contains(turn.VisibleNodeIDs, "start") {
+				t.Fatalf("missing/duplicate lifecycle row: %+v", turn.VisibleNodeIDs)
+			}
+			for _, id := range []string{"start", "end"} {
+				if !slices.Contains(turn.EntryIDs, id) {
+					t.Fatalf("lost durable lifecycle %s", id)
 				}
 			}
 			tail := withTurnOpeningUser(entries, entries[len(entries)-1:])
@@ -141,18 +140,18 @@ func TestCompactLifecycleIsDurableUnfoldedMetadata(t *testing.T) {
 
 func TestCompactPagesWholeTurnsWithoutHiddenBodies(t *testing.T) {
 	entries := compactFixture(7, 320)
-	page := BuildCompact(entries, "", "", 1)
-	if len(page.Turns) != 4 || len(page.Entries) != 8 || page.OldestID != "u3" || !page.HasMore {
+	page := BuildCompact(entries, "", "")
+	if len(page.Turns) != 4 || len(page.Entries) != 4 || page.OldestID != "u3" || !page.HasMore {
 		t.Fatalf("tail: turns=%d entries=%d cursor=%s more=%v", len(page.Turns), len(page.Entries), page.OldestID, page.HasMore)
 	}
 	for _, turn := range page.Turns {
-		if turn.HiddenCount != 640 || turn.Stats.Steps != 321 || turn.Stats.Input != 3200 || turn.Stats.Tools != 320 || turn.Stats.ToolFailures != 0 {
+		if turn.HiddenCount != 641 || turn.Stats.Steps != 321 || turn.Stats.Input != 3200 || turn.Stats.Tools != 320 || turn.Stats.ToolFailures != 0 {
 			t.Fatalf("incomplete turn summary: %+v", turn)
 		}
 	}
 	for want := 2; want >= 0; want-- {
-		page = BuildCompact(entries, "", page.OldestID, 1)
-		if len(page.Turns) != 1 || len(page.Entries) != 2 || page.OldestID != fmt.Sprintf("u%d", want) || page.HasMore != (want > 0) {
+		page = BuildCompact(entries, "", page.OldestID)
+		if len(page.Turns) != 1 || len(page.Entries) != 1 || page.OldestID != fmt.Sprintf("u%d", want) || page.HasMore != (want > 0) {
 			t.Fatalf("older turn %d: %+v", want, page)
 		}
 		raw, _ := json.Marshal(page)
@@ -162,22 +161,22 @@ func TestCompactPagesWholeTurnsWithoutHiddenBodies(t *testing.T) {
 	}
 }
 
-func TestCompactRuntimeUserMessagesDoNotSpendKeepSlots(t *testing.T) {
+func TestCompactRuntimeUserMessagesInterleaveWithoutSplittingTurns(t *testing.T) {
 	entries := []Entry{
 		{Type: "message", ID: "u0", Message: &types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "human"}}}},
 		{Type: "message", ID: "a0", ParentID: "u0", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "working"}}}},
 		{Type: "message", ID: "notice", ParentID: "a0", Message: &types.Message{Role: "user", Origin: "agent:task-1", Content: []types.Content{{Type: "text", Text: "<task-notification>done</task-notification>"}}}},
-		{Type: "message", ID: "a1", ParentID: "notice", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "final"}}}},
+		{Type: "message", ID: "a1", ParentID: "notice", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: strings.Repeat("长", compactVisibleTextRunes)}}}},
 		{Type: "message", ID: "u1", ParentID: "a1", Message: &types.Message{Role: "user", Origin: "extension:telegram-bot", Content: []types.Content{{Type: "text", Text: "next human"}}}},
 		{Type: "message", ID: "a2", ParentID: "u1", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "reply"}}}},
 	}
-	page := BuildCompact(entries, "", "", 1)
+	page := BuildCompact(entries, "", "")
 	if len(page.Turns) != 2 || page.Turns[0].ID != "u0" || page.Turns[1].ID != "u1" {
 		t.Fatalf("runtime message split turns: %+v", page.Turns)
 	}
 	first := page.Turns[0]
 	if first.HiddenCount != 2 || !slices.Equal(first.VisibleNodeIDs, []string{"u0", "a1"}) {
-		t.Fatalf("runtime message consumed a reply slot: %+v", first)
+		t.Fatalf("content visibility or hidden interleaving changed: %+v", first)
 	}
 	if slices.ContainsFunc(page.Entries, func(e Entry) bool { return e.ID == "notice" }) {
 		t.Fatal("older runtime notification body escaped the fold")
@@ -188,54 +187,42 @@ func TestCompactRuntimeNotificationsNeverHideFinalReply(t *testing.T) {
 	for _, humanOrigin := range []string{"", "extension:telegram"} {
 		for _, trailing := range []bool{false, true} {
 			for _, runtimeOrigin := range []string{"agent:child", "runtime:mailbox"} {
-				for _, keep := range []int{0, 1} {
-					t.Run(fmt.Sprintf("human=%s/trailing=%v/runtime=%s/keep=%d", humanOrigin, trailing, runtimeOrigin, keep), func(t *testing.T) {
-						entries := []Entry{
-							{Type: "message", ID: "u", Message: &types.Message{Role: "user", Origin: humanOrigin}},
-							{Type: "message", ID: "work", ParentID: "u", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "working"}}}},
-						}
-						add := func(id string, m types.Message) {
-							entries = append(entries, Entry{Type: "message", ID: id, ParentID: entries[len(entries)-1].ID, Message: &m})
-						}
-						notice := types.Message{Role: "user", Origin: runtimeOrigin, Content: []types.Content{{Type: "text", Text: "context-only notice"}}}
-						if !trailing {
-							add("notice", notice)
-						}
-						add("answer", types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "final answer"}}})
-						if trailing {
-							add("notice", notice)
-						}
-						page := BuildCompact(entries, "", "", keep)
-						if len(page.Turns) != 1 {
-							t.Fatalf("runtime notification split the human turn: %+v", page)
-						}
-						turn := page.Turns[0]
-						wantVisible := []string{"u"}
-						wantHidden := 3
-						if keep == 1 {
-							wantHidden = 2
-							if trailing {
-								wantVisible = []string{"u", "answer", "notice"}
-								wantHidden = 1
-							} else {
-								wantVisible = []string{"u", "answer"}
-							}
-						}
-						if turn.HiddenCount != wantHidden || !slices.Equal(turn.VisibleNodeIDs, wantVisible) {
-							t.Fatalf("notice consumed keep or escaped chronological cutoff: %+v", turn)
-						}
-						if !slices.Equal(turn.EntryIDs, wantVisible) || turn.Stats.Steps != 2 || turn.Stats.Turn != 1 {
-							t.Fatalf("projection changed order or accounting: %+v", turn)
-						}
-						if turn.FirstHiddenID != "work" || slices.Contains(turn.OmittedNodeIDs, "notice") {
-							t.Fatalf("notice affected hidden reply identities: %+v", turn)
-						}
-						reprojected, found := BuildCompactTurn(entries, "", "notice", keep)
-						if !found || !slices.Equal(reprojected.Turns[0].VisibleNodeIDs, wantVisible) {
-							t.Fatalf("turn reprojection lost chronological cutoff: %+v", reprojected)
-						}
-					})
-				}
+				t.Run(fmt.Sprintf("human=%s/trailing=%v/runtime=%s", humanOrigin, trailing, runtimeOrigin), func(t *testing.T) {
+					entries := []Entry{
+						{Type: "message", ID: "u", Message: &types.Message{Role: "user", Origin: humanOrigin}},
+						{Type: "message", ID: "work", ParentID: "u", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "working"}}}},
+					}
+					add := func(id string, m types.Message) {
+						entries = append(entries, Entry{Type: "message", ID: id, ParentID: entries[len(entries)-1].ID, Message: &m})
+					}
+					notice := types.Message{Role: "user", Origin: runtimeOrigin, Content: []types.Content{{Type: "text", Text: "context-only notice"}}}
+					if !trailing {
+						add("notice", notice)
+					}
+					add("answer", types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: strings.Repeat("final answer ", 30)}}})
+					if trailing {
+						add("notice", notice)
+					}
+					page := BuildCompact(entries, "", "")
+					if len(page.Turns) != 1 {
+						t.Fatalf("runtime notification split the human turn: %+v", page)
+					}
+					turn := page.Turns[0]
+					wantVisible := []string{"u", "answer"}
+					if turn.HiddenCount != 2 || !slices.Equal(turn.VisibleNodeIDs, wantVisible) {
+						t.Fatalf("notice placement changed content visibility: %+v", turn)
+					}
+					if !slices.Equal(turn.EntryIDs, wantVisible) || turn.Stats.Steps != 2 || turn.Stats.Turn != 1 {
+						t.Fatalf("projection changed order or accounting: %+v", turn)
+					}
+					if turn.FirstHiddenID != "work" || slices.Contains(turn.OmittedNodeIDs, "notice") {
+						t.Fatalf("notice affected hidden reply identities: %+v", turn)
+					}
+					reprojected, found := BuildCompactTurn(entries, "", "notice")
+					if !found || !slices.Equal(reprojected.Turns[0].VisibleNodeIDs, wantVisible) {
+						t.Fatalf("turn reprojection changed content visibility: %+v", reprojected)
+					}
+				})
 			}
 		}
 	}
@@ -249,10 +236,10 @@ func TestCompactProjectionKeepsRunAbortedVisible(t *testing.T) {
 		{Type: "message", ID: "a2", ParentID: "a1", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "partial"}}, StopReason: "aborted"}},
 		{Type: "run_aborted", ID: "x0", ParentID: "a2", Details: map[string]any{"reason": "user_request", "source": "webui"}},
 	}
-	page := BuildCompact(entries, "", "", 1)
-	if len(page.Turns) != 1 || page.Turns[0].HiddenCount != 1 ||
-		!slices.Equal(page.Turns[0].VisibleNodeIDs, []string{"u0", "a1", "a2", "x0"}) {
-		t.Fatalf("run_aborted was folded or consumed keep: %+v", page)
+	page := BuildCompact(entries, "", "")
+	if len(page.Turns) != 1 || page.Turns[0].HiddenCount != 2 ||
+		!slices.Equal(page.Turns[0].VisibleNodeIDs, []string{"u0", "a2", "x0"}) {
+		t.Fatalf("run_aborted was folded: %+v", page)
 	}
 	if !slices.ContainsFunc(page.Entries, func(e Entry) bool { return e.ID == "x0" }) {
 		t.Fatal("run_aborted body missing from compact page")
@@ -264,54 +251,42 @@ func TestCompactProjectionKeepsFoldAnchorForMachineOnlyTurn(t *testing.T) {
 		{Type: "message", ID: "directive", Message: &types.Message{Role: "user", Origin: "agent", Content: []types.Content{{Type: "text", Text: "subagent directive"}}}},
 		{Type: "message", ID: "answer", ParentID: "directive", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "done"}}}},
 	}
-	for _, keep := range []int{0, 1} {
-		page := BuildCompact(entries, "", "", keep)
-		if len(page.Turns) != 1 || page.Turns[0].ID != "directive" || page.Turns[0].HiddenCount != 2-keep {
-			t.Fatalf("machine-only turn keep=%d: %+v", keep, page)
-		}
-		if page.Turns[0].Stats.Turn != 1 {
-			t.Fatalf("runtime-only turn must start at ordinal 1: %+v", page.Turns[0])
-		}
-		want := []string{}
-		wantEntries := []string{"directive"}
-		if keep == 1 {
-			want = append(want, "answer")
-			wantEntries = append(wantEntries, "answer")
-		}
-		if !slices.Equal(page.Turns[0].VisibleNodeIDs, want) || !slices.Equal(page.Turns[0].EntryIDs, wantEntries) {
-			t.Fatalf("missing stable folded runtime anchor keep=%d: %+v", keep, page)
-		}
+	page := BuildCompact(entries, "", "")
+	if len(page.Turns) != 1 || page.Turns[0].ID != "directive" || page.Turns[0].HiddenCount != 2 {
+		t.Fatalf("machine-only turn: %+v", page)
+	}
+	if page.Turns[0].Stats.Turn != 1 {
+		t.Fatalf("runtime-only turn must start at ordinal 1: %+v", page.Turns[0])
+	}
+	if !slices.Equal(page.Turns[0].VisibleNodeIDs, []string{}) || !slices.Equal(page.Turns[0].EntryIDs, []string{"directive"}) {
+		t.Fatalf("missing stable folded runtime anchor: %+v", page)
 	}
 }
 
-func TestCompactRuntimeCutoffWhenAllOrNoRealRepliesAreKept(t *testing.T) {
+func TestCompactRuntimeNoticesFoldAroundLongReply(t *testing.T) {
 	entries := []Entry{
 		{Type: "message", ID: "directive", Message: &types.Message{Role: "user", Origin: "agent"}},
 		{Type: "message", ID: "first", ParentID: "directive", Message: &types.Message{Role: "assistant"}},
 		{Type: "message", ID: "middle", ParentID: "first", Message: &types.Message{Role: "user", Origin: "agent:child"}},
-		{Type: "message", ID: "final", ParentID: "middle", Message: &types.Message{Role: "assistant"}},
+		{Type: "message", ID: "final", ParentID: "middle", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: strings.Repeat("x", compactVisibleTextRunes)}}}},
 		{Type: "message", ID: "trailing", ParentID: "final", Message: &types.Message{Role: "user", Origin: "agent:child"}},
 		{Type: "compaction", ID: "checkpoint", ParentID: "trailing", Summary: "summary"},
 	}
-	for _, keep := range []int{2, 20} {
-		page := BuildCompact(entries, "", "", keep)
-		turn := page.Turns[0]
-		if turn.ID != "directive" || turn.HiddenCount != 1 ||
-			!slices.Equal(turn.VisibleNodeIDs, []string{"first", "middle", "final", "trailing", "checkpoint"}) {
-			t.Fatalf("all real replies kept should fold only the preceding directive: %+v", turn)
-		}
-		if !slices.Contains(turn.EntryIDs, "directive") {
-			t.Fatal("folded directive lost its stable anchor body")
-		}
+	page := BuildCompact(entries, "", "")
+	turn := page.Turns[0]
+	if turn.ID != "directive" || turn.HiddenCount != 4 ||
+		!slices.Equal(turn.VisibleNodeIDs, []string{"final", "checkpoint"}) {
+		t.Fatalf("long reply should stay visible across folded runtime notices: %+v", turn)
+	}
+	if !slices.Contains(turn.EntryIDs, "directive") {
+		t.Fatal("folded directive lost its stable anchor body")
 	}
 	onlyNotices := []Entry{entries[0], {Type: "message", ID: "notice", ParentID: "directive", Message: &types.Message{Role: "user", Origin: "agent:child"}}}
-	for _, keep := range []int{0, 1, 20} {
-		page := BuildCompact(onlyNotices, "", "", keep)
-		turn := page.Turns[0]
-		if turn.ID != "directive" || turn.HiddenCount != 2 || len(turn.VisibleNodeIDs) != 0 ||
-			!slices.Equal(turn.EntryIDs, []string{"directive"}) {
-			t.Fatalf("notice-only turns have no real reply cutoff keep=%d: %+v", keep, turn)
-		}
+	page = BuildCompact(onlyNotices, "", "")
+	turn = page.Turns[0]
+	if turn.ID != "directive" || turn.HiddenCount != 2 || len(turn.VisibleNodeIDs) != 0 ||
+		!slices.Equal(turn.EntryIDs, []string{"directive"}) {
+		t.Fatalf("notice-only turns must fold entirely: %+v", turn)
 	}
 }
 
@@ -324,18 +299,16 @@ func TestCompactRuntimeCutoffPreservesLiveNestedToolAndFollowingNodes(t *testing
 			"toolCallId": "live-tool", "parentCallId": "exec", "cellId": "cell", "toolName": "read",
 		}},
 		{Type: "message", ID: "after", ParentID: "live-start", Message: &types.Message{Role: "user", Origin: "agent:child"}},
-		{Type: "message", ID: "latest", ParentID: "after", Message: &types.Message{Role: "assistant"}},
+		{Type: "message", ID: "latest", ParentID: "after", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: strings.Repeat("x", compactVisibleTextRunes)}}}},
 		{Type: "compaction", ID: "checkpoint", ParentID: "latest", Summary: "summary"},
 	}
-	for _, keep := range []int{0, 1} {
-		turn := BuildCompact(entries, "", "", keep).Turns[0]
-		if turn.HiddenCount != 2 ||
-			!slices.Equal(turn.VisibleNodeIDs, []string{"u", "live-tool", "after", "latest", "checkpoint"}) {
-			t.Fatalf("live real reply did not bound the fold keep=%d: %+v", keep, turn)
-		}
-		if !slices.Contains(turn.EntryIDs, "live-start") {
-			t.Fatal("live nested tool lost its reconstructable start")
-		}
+	turn := BuildCompact(entries, "", "").Turns[0]
+	if turn.HiddenCount != 3 ||
+		!slices.Equal(turn.VisibleNodeIDs, []string{"u", "live-tool", "latest", "checkpoint"}) {
+		t.Fatalf("live nested tool and long reply visibility changed: %+v", turn)
+	}
+	if !slices.Contains(turn.EntryIDs, "live-start") {
+		t.Fatal("live nested tool lost its reconstructable start")
 	}
 }
 
@@ -397,49 +370,49 @@ func TestCompactTurnExpansionHasIndependentCursor(t *testing.T) {
 	}
 }
 
-func TestCompactProjectionKeepsToolPairsAndZeroKeep(t *testing.T) {
-	entries := compactFixture(1, 3)
-	page := BuildCompact(entries[:len(entries)-1], "", "", 1)
+func TestCompactProjectionKeepsToolPairs(t *testing.T) {
+	entries := []Entry{
+		{Type: "message", ID: "u", Message: &types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "human"}}}},
+		{Type: "message", ID: "a", ParentID: "u", Message: &types.Message{Role: "assistant", Content: []types.Content{
+			{Type: "text", Text: strings.Repeat("x", compactVisibleTextRunes)},
+			{Type: "toolCall", ID: "call", Name: "Bash", Arguments: map[string]any{"command": "HIDDEN_ARGUMENT"}},
+		}}},
+		{Type: "message", ID: "r", ParentID: "a", Message: &types.Message{Role: "toolResult", ToolCallID: "call", Content: []types.Content{{Type: "text", Text: "HIDDEN_RESULT"}}}},
+	}
+	page := BuildCompact(entries, "", "")
 	turn := page.Turns[0]
-	if len(page.Entries) != 3 || turn.HiddenCount != 5 || len(turn.OmittedNodeIDs) != 1 || turn.VisibleNodeIDs[1] != "c0-2" {
+	if len(page.Entries) != 2 || turn.HiddenCount != 1 || !slices.Equal(turn.VisibleNodeIDs, []string{"u", "a"}) ||
+		!slices.Equal(turn.OmittedNodeIDs, []string{"call"}) {
 		t.Fatalf("tool projection: %+v", turn)
 	}
 	raw, _ := json.Marshal(page.Entries)
-	if strings.Contains(string(raw), "HIDDEN_BODY") || !page.Entries[1].Truncated {
-		t.Fatal("visible tool included hidden assistant prose")
+	if strings.Contains(string(raw), "HIDDEN_RESULT") {
+		t.Fatal("folded tool result leaked into compact page")
 	}
-	page = BuildCompact(entries, "", "", 0)
-	if len(page.Entries) != 1 || page.Turns[0].HiddenCount != 7 {
-		t.Fatalf("keep=0: %+v", page)
-	}
-	branched := append(entries, Entry{Type: "message", ID: "sibling", ParentID: entries[0].ID, Message: &types.Message{Role: "assistant"}})
-	page = BuildCompact(branched, "sibling", "", 1)
+	branched := append(entries, Entry{Type: "message", ID: "sibling", ParentID: entries[0].ID, Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: strings.Repeat("x", compactVisibleTextRunes)}}}})
+	page = BuildCompact(branched, "sibling", "")
 	if len(page.Entries) != 2 || page.Turns[0].HiddenCount != 0 || page.Entries[1].ID != "sibling" {
 		t.Fatalf("wrong branch: %+v", page)
 	}
 }
 
-func TestCompactProjectionNeverFoldsCompactionIntoKeepSlot(t *testing.T) {
+func TestCompactProjectionNeverFoldsCompaction(t *testing.T) {
 	entries := []Entry{
 		{Type: "message", ID: "u1", Message: &types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "one"}}}},
 		{Type: "message", ID: "a1", ParentID: "u1", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "first"}}}},
 		{Type: "message", ID: "a2", ParentID: "a1", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "final"}}}},
 		{Type: "compaction", ID: "c1", ParentID: "a2", Summary: "sum", Timestamp: "1970-01-01T00:00:03Z"},
 	}
-	page := BuildCompact(entries, "", "", 1)
+	page := BuildCompact(entries, "", "")
 	turn := page.Turns[0]
-	if turn.HiddenCount != 1 || !slices.Equal(turn.VisibleNodeIDs, []string{"u1", "a2", "c1"}) {
-		t.Fatalf("compaction consumed the keep slot: %+v", turn)
+	if turn.HiddenCount != 2 || !slices.Equal(turn.VisibleNodeIDs, []string{"u1", "c1"}) {
+		t.Fatalf("short prose should fold while compaction stays visible: %+v", turn)
 	}
-	if slices.ContainsFunc(page.Entries, func(e Entry) bool { return e.ID == "a1" }) {
+	if slices.ContainsFunc(page.Entries, func(e Entry) bool { return e.ID == "a1" || e.ID == "a2" }) {
 		t.Fatal("folded reply leaked into the compact page")
 	}
 	if !slices.ContainsFunc(page.Entries, func(e Entry) bool { return e.ID == "c1" }) {
 		t.Fatal("compaction body must stay visible on its own row")
-	}
-	page = BuildCompact(entries, "", "", 0)
-	if page.Turns[0].HiddenCount != 2 || !slices.Equal(page.Turns[0].VisibleNodeIDs, []string{"u1", "c1"}) {
-		t.Fatalf("keep=0: %+v", page.Turns[0])
 	}
 }
 
@@ -460,7 +433,7 @@ func TestCompactTurnCountsToolFailuresAndCacheMisses(t *testing.T) {
 	add("r2", types.Message{Role: "toolResult", ToolCallID: "t2", IsError: true})
 	add("a1", types.Message{Role: "assistant", Usage: usage(30000, 0)})
 
-	page := BuildCompact(entries, "", "", 1)
+	page := BuildCompact(entries, "", "")
 	turn := page.Turns[0]
 	if turn.Stats.Tools != 2 || turn.Stats.ToolFailures != 1 || turn.Stats.CacheMisses != 1 {
 		t.Fatalf("stats: tools=%d failures=%d misses=%d", turn.Stats.Tools, turn.Stats.ToolFailures, turn.Stats.CacheMisses)
@@ -486,7 +459,7 @@ func TestCompactCacheMissBaselineSurvivesPaging(t *testing.T) {
 		add("a"+id, types.Message{Role: "assistant", Usage: usage(10, 100)})
 	}
 
-	page := BuildCompact(entries, "", "", 1)
+	page := BuildCompact(entries, "", "")
 	if len(page.Turns) != 4 || page.Turns[0].ID != "u1" {
 		t.Fatalf("page window: %+v", page.Turns)
 	}
@@ -507,7 +480,7 @@ func TestCompactPageBoundsLargeVisibleSuffixWithoutSplittingTurn(t *testing.T) {
 			m.Content = []types.Content{{Type: "text", Text: strings.Repeat("x", 24*1024)}, {Type: "thinking", Thinking: strings.Repeat("y", 24*1024)}}
 		}
 	}
-	page := BuildCompact(entries, "", "u1", 20)
+	page := BuildCompact(entries, "", "u1")
 	raw, _ := json.Marshal(page)
 	if len(raw) > MaxViewPageBytes || len(page.Turns) != 1 || page.OldestID != "u0" || page.HasMore {
 		t.Fatalf("page: bytes=%d turns=%d cursor=%s more=%v", len(raw), len(page.Turns), page.OldestID, page.HasMore)
@@ -520,7 +493,7 @@ func TestCompactTimingAndLatestToolStates(t *testing.T) {
 		{ID: "a", ParentID: "u", Type: "message", Message: &types.Message{Role: "assistant", Timestamp: 2000, Content: []types.Content{{Type: "toolCall", ID: "slow"}, {Type: "toolCall", ID: "fast"}}}},
 		{ID: "r", ParentID: "a", Type: "message", Message: &types.Message{Role: "toolResult", Timestamp: 5000, ToolCallID: "fast", DurationMs: 3000, IsError: true}},
 	}
-	page := BuildCompact(entries, "", "", 0)
+	page := BuildCompact(entries, "", "")
 	raw, err := json.Marshal(page.Turns[0])
 	if err != nil {
 		t.Fatal(err)
@@ -541,12 +514,12 @@ func TestCompactTimingAndLatestToolStates(t *testing.T) {
 		t.Fatalf("missing sparse timing/pending state: %s", raw)
 	}
 	entries = append(entries, Entry{ID: "r2", ParentID: "r", Type: "message", Message: &types.Message{Role: "toolResult", Timestamp: 4000, ToolCallID: "slow", DurationMs: 2000}})
-	page = BuildCompact(entries, "", "", 0)
+	page = BuildCompact(entries, "", "")
 	if page.Turns[0].Stats.ElapsedMS != 4000 {
 		t.Fatal("parallel completion timestamp moved backwards")
 	}
 	entries = append(entries, Entry{ID: "c", ParentID: "r2", Type: "compaction", Timestamp: "1970-01-01T00:00:07Z"})
-	page = BuildCompact(entries, "", "", 0)
+	page = BuildCompact(entries, "", "")
 	raw, _ = json.Marshal(page.Turns[0])
 	if err := json.Unmarshal(raw, &turn); err != nil {
 		t.Fatal(err)
@@ -555,7 +528,7 @@ func TestCompactTimingAndLatestToolStates(t *testing.T) {
 		t.Fatalf("compaction must extend duration but not assistant boundary: %s", raw)
 	}
 	entries = append(entries, Entry{ID: "next", ParentID: "c", Type: "message", Message: &types.Message{Role: "assistant", Timestamp: 8000}})
-	page = BuildCompact(entries, "", "", 0)
+	page = BuildCompact(entries, "", "")
 	if len(page.Turns[0].ToolStates) != 0 || page.Turns[0].AssistantAt != 8000 || page.Turns[0].EntryCount != len(entries) {
 		t.Fatalf("next assistant must retire old batch: %+v", page.Turns[0])
 	}
@@ -566,7 +539,7 @@ func TestCompactCumulativeElapsedIncludesUnloadedTurns(t *testing.T) {
 	for i := range entries {
 		entries[i].Message.Timestamp = int64(1000 + (i/2)*10000 + (i%2)*2000)
 	}
-	page := BuildCompact(entries, "", "", 0)
+	page := BuildCompact(entries, "", "")
 	for _, turn := range page.Turns {
 		raw, _ := json.Marshal(turn)
 		var got struct{ CumulativeElapsedMs int64 }
@@ -575,7 +548,7 @@ func TestCompactCumulativeElapsedIncludesUnloadedTurns(t *testing.T) {
 			t.Fatalf("cumulative timing: %s", raw)
 		}
 	}
-	projected, found := BuildCompactTurn(entries, "", "u5", 0)
+	projected, found := BuildCompactTurn(entries, "", "u5")
 	if !found {
 		t.Fatal("turn missing")
 	}
@@ -583,4 +556,28 @@ func TestCompactCumulativeElapsedIncludesUnloadedTurns(t *testing.T) {
 	if !strings.Contains(string(raw), `"cumulativeElapsedMs":12000`) {
 		t.Fatalf("reprojected cumulative timing: %s", raw)
 	}
+}
+
+func TestCompactVisibleProseSurvivesBodyTrimming(t *testing.T) {
+	entries := []Entry{
+		{Type: "message", ID: "u", Message: &types.Message{Role: "user"}},
+		{Type: "message", ID: "a", ParentID: "u", Message: &types.Message{Role: "assistant", Content: []types.Content{
+			{Type: "text", Text: strings.Repeat("长", compactVisibleTextRunes+20)},
+			{Type: "thinking", Thinking: strings.Repeat("思", 200*1024)},
+		}}},
+	}
+	page := BuildCompact(entries, "", "")
+	if len(page.Turns) != 1 || !slices.Contains(page.Turns[0].VisibleNodeIDs, "a") {
+		t.Fatalf("visible prose missing: %+v", page.Turns)
+	}
+	for _, e := range page.Entries {
+		if e.ID != "a" {
+			continue
+		}
+		if got := utf8.RuneCountInString(e.Message.Text()); got < compactVisibleTextRunes {
+			t.Fatalf("trimmed visible prose to %d runes", got)
+		}
+		return
+	}
+	t.Fatal("assistant body missing")
 }

@@ -7,6 +7,10 @@ import type { ToolSettings } from '../src/api/types'
 
 test.describe.configure({ mode: 'parallel' })
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('ki-message-view', 'detailed'))
+})
+
 test('MCP settings toggle configured servers without connecting or replacing tool settings', async ({ page, request }) => {
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
   const headers = { Authorization: `Bearer ${serverToken()}` }

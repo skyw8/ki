@@ -10,6 +10,10 @@ import { newSession } from './session.ts'
 
 test.describe.configure({ mode: 'parallel' })
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('ki-message-view', 'detailed'))
+})
+
 const repo = join(dirname(fileURLToPath(import.meta.url)), '../..')
 
 async function sendPrompt(page: Page, text: string) {

@@ -10,6 +10,10 @@ import { focusedSessionReader, newSession } from './session.ts'
 
 test.describe.configure({ mode: 'parallel' })
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('ki-message-view', 'detailed'))
+})
+
 test('permission reflects the secure-context rules of the Notification API', () => {
   expect(permissionFrom({ secure: false, supported: true, permission: 'granted' })).toBe('insecure')
   expect(permissionFrom({ secure: true, supported: false })).toBe('unsupported')

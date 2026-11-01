@@ -22,7 +22,7 @@ import { ModelPickerDialog } from './features/settings/ModelPickerDialog'
 import { ProviderSettings } from './features/settings/ProviderSettings'
 import { IAgent, ISideChat, IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './components/icons'
 import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEffort, emptyView, keepComposer, loadHistory, reconcileComposerModel, sessionCreateBody, sessionStats, userRequests } from './lib/model'
-import { clampCompactKeep, loadMessageView, saveMessageView, type MessageView } from './lib/messageView'
+import { loadMessageView, saveMessageView, type MessageView } from './lib/messageView'
 import type { CatalogExtension, ChatNode, Content, ExtensionUI, Meta, ModelInfo, PushEvent, Question, SearchHit, SessionInfo, WorkspaceInfo } from './api/types'
 import { ContextView } from './features/context/ContextView'
 import { MarkdownLinkProvider } from './features/markdown/links'
@@ -349,7 +349,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   const [messageView, setMessageView] = useState<MessageView>(loadMessageView)
   const messageViewRef = useRef(messageView)
   messageViewRef.current = messageView
-  const transcriptOptions = () => messageViewRef.current.mode === 'compact' ? { view: 'compact' as const, keep: messageViewRef.current.keep } : {}
+  const transcriptOptions = () => messageViewRef.current.mode === 'compact' ? { view: 'compact' as const } : {}
   const [notifyEnabled, setNotifyEnabled] = useState<boolean>(loadNotifyPref)
   const [notifyPerm, setNotifyPerm] = useState<NotifyPermission>(currentPermission)
   const [pushReady, setPushReady] = useState(false)
@@ -530,8 +530,8 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   }, [dark])
 
   const changeMessageView = useCallback((next: MessageView) => {
-    setMessageView({ mode: next.mode, keep: clampCompactKeep(next.keep) })
-    saveMessageView(next)
+    setMessageView({ mode: next.mode })
+    saveMessageView({ mode: next.mode })
   }, [])
 
   const toggleNotify = useCallback(async (on: boolean) => {
@@ -878,7 +878,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   syncActions.current = { refreshIndex, refreshList }
   const sync = useMemo(() => new SessionSyncController(api, store, {
     transcriptOptions: () => messageViewRef.current.mode === 'compact'
-      ? { view: 'compact', keep: messageViewRef.current.keep } : {},
+      ? { view: 'compact' } : {},
     onListening: id => {
       runningKnown.current.add(id)
       setSessions(ss => ss.map(s => s.id === id ? { ...s, running: true } : s))
@@ -2088,7 +2088,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
 					loadingOlder={loadingOlder}
 					turnBase={view.turnBase}
 					mode={messageView.mode}
-					keep={messageView.keep}
 				  />
                 </div>
                 <PerfHud target={scrollRef as React.RefObject<HTMLElement | null>} />

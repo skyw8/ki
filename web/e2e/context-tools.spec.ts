@@ -60,7 +60,6 @@ async function seed(page: Page, withTools: boolean) {
   await page.addInitScript(() => {
     localStorage.setItem('ki-theme', 'light')
     localStorage.setItem('ki-message-view', 'compact')
-    localStorage.setItem('ki-message-view-keep', '1')
   })
   return { id, title }
 }

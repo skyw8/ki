@@ -85,11 +85,11 @@ func TestTranscriptMetadataNestedAuditCountsSelectedBranch(t *testing.T) {
 		}
 		metadata = append(metadata, meta)
 	}
-	page := BuildCompact(metadata, "answer", "", 1)
+	page := BuildCompact(metadata, "answer", "")
 	if len(page.Turns) != 1 || page.Turns[0].Stats.Tools != 3 || page.Turns[0].Stats.ToolFailures != 1 {
 		t.Fatalf("metadata counted lifecycle frames or sibling audit: %+v", page.Turns)
 	}
-	if !reflect.DeepEqual(page.Turns[0].Stats, BuildCompact(entries, "answer", "", 1).Turns[0].Stats) {
+	if !reflect.DeepEqual(page.Turns[0].Stats, BuildCompact(entries, "answer", "").Turns[0].Stats) {
 		t.Fatalf("body-free metadata changed branch statistics: %+v", page.Turns[0].Stats)
 	}
 }

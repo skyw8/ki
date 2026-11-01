@@ -20,7 +20,7 @@ export function useTranscriptRequests(
     api, id, store, presentation,
     beforeCommit: signal => callbacks.current.beforeCommit(signal),
     onRecoverNeeded: canRecover ? () => callbacks.current.onRecoverNeeded?.() ?? Promise.resolve() : undefined,
-  }), [api, id, revision, store, presentation.mode, presentation.keep, canRecover])
+  }), [api, id, revision, store, presentation.mode, canRecover])
   useLayoutEffect(() => {
     controller.start()
     return () => controller.dispose()

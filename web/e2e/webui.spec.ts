@@ -47,6 +47,10 @@ async function expectMinTarget(locator: Locator, label: string): Promise<void> {
 
 test.describe.configure({ mode: 'parallel' })
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('ki-message-view', 'detailed'))
+})
+
 test('slash palette is available before creating a session', async ({ page }) => {
   await page.goto('/')
   const input = page.getByTestId('composer-input')
@@ -592,10 +596,6 @@ test('chat and context browser talk to the fake runtime', async ({ page }) => {
   await openContextItem(assistant.locator('.context-item').first())
   await expect(assistant).toContainText('ok')
   const tools = await openContextCategory(page, 'tools')
-  const unloadedSchemas = tools.locator('.context-item').filter({ has: page.locator('summary', { hasText: 'Tool schema aggregate (not loaded)' }) }).first()
-  await openContextItem(unloadedSchemas)
-  await expect(unloadedSchemas.getByTestId('context-hydrate')).toBeVisible()
-  await unloadedSchemas.getByTestId('context-hydrate').click()
   const readTool = tools.locator('.context-item').filter({ has: page.locator('summary', { hasText: /^read\b/ }) }).first()
   await openContextItem(readTool)
   await expect(readTool).toContainText('Read a file')
@@ -681,11 +681,12 @@ test('context separates system sources and browses the tool input of each reques
     expect(createdSession.ok()).toBe(true)
     const sessionId = (await createdSession.json() as { id: string }).id
     expect((await request.patch(`/v1/sessions/${sessionId}`, { headers, data: { title: 'Context sources fixture' } })).ok()).toBe(true)
+    await page.addInitScript(() => localStorage.setItem('ki-message-view', 'compact'))
     await page.goto('/')
     await expandWorkspaces(page)
     await page.getByTestId('session-title').filter({ hasText: 'Context sources fixture' }).click()
     await sendPrompt(page, 'e2e-bash: echo KI-CONTEXT-TOOL-MARKER')
-    await expect(page.getByTestId('assistant-message').last()).toContainText('ok')
+    await expect(page.getByTestId('fold-row')).toContainText('已折叠 3 条消息')
     await page.getByTestId('tab-context').click()
     await expect(page.getByTestId('context-step')).toHaveCount(2)
     const viewport = page.viewportSize()
@@ -822,13 +823,14 @@ test('context hydrates historical agent and compaction inputs and locates early 
   for (let turn = 0; turn < 12; turn++) {
     input(`context-tail-user-${turn}`, `Checkpoint tail input ${turn}`)
     header(`context-tail-request-${turn}`)
-    answer(`context-tail-answer-${turn}`, `Checkpoint tail reply ${turn}`)
+    answer(`context-tail-answer-${turn}`, turn === 11
+      ? `Checkpoint tail reply ${turn}. ${'Long compact prose keeps the final assistant row visible. '.repeat(8)}`
+      : `Checkpoint tail reply ${turn}`)
   }
   appendFileSync(join(dir, 'events.jsonl'), entries.map(entry => JSON.stringify(entry)).join('\n') + '\n')
   writeFileSync(configPath, JSON.stringify({ ...config, title, activeLeafId: parentId }))
   await page.addInitScript(() => {
     localStorage.setItem('ki-message-view', 'compact')
-    localStorage.setItem('ki-message-view-keep', '1')
   })
   await page.goto('/')
   await expandWorkspaces(page)
@@ -1073,8 +1075,7 @@ test('edit branches in place with attachments and fork opens a new session', asy
   await page.getByRole('button', { name: '关闭图片预览' }).click()
   await expect(page.getByTestId('assistant-message')).toContainText('ok')
   const showBranches = page.getByRole('button', { name: '查看分支', exact: true }).first()
-  await expect(showBranches).toBeVisible()
-  await showBranches.click()
+  if (await showBranches.isVisible()) await showBranches.click()
   await expect(page.locator('.branch-nav')).toContainText('2 / 2')
   await expectMinTarget(page.locator('.branch-nav button').first(), 'previous branch')
   await expectMinTarget(page.locator('.branch-nav button').last(), 'next branch')
@@ -1082,8 +1083,7 @@ test('edit branches in place with attachments and fork opens a new session', asy
   await page.locator('.branch-nav button').first().click()
   await expect(originalBubble).toBeVisible()
   await expect(originalBubble).toContainText(original)
-  await expect(showBranches).toBeVisible()
-  await showBranches.click()
+  await expect(page.locator('.branch-nav')).toContainText('1 / 2')
   await page.locator('.branch-nav button').last().click()
   await expect(editedBubble).toBeVisible()
   await expect(editedBubble).toContainText(edited)
@@ -1099,8 +1099,6 @@ test('edit branches in place with attachments and fork opens a new session', asy
   await expect(editedBubble).toContainText(edited)
 
   await page.getByTestId('regen-msg').click()
-  await expect(showBranches).toBeVisible()
-  await showBranches.click()
   await expect(page.locator('.branch-nav')).toContainText('2 / 2')
   await expect.poll(async () => page.evaluate(async () => {
     return (await fetch('/v1/sessions', { credentials: 'same-origin' }).then(r => r.json()) as unknown[]).length

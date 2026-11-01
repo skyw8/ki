@@ -1,8 +1,10 @@
 import { expect, test, type Page } from '@playwright/test'
 import { openSessionRow } from './sidebar.ts'
+import { openStream } from './stream-fixture'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { statePath } from './global-setup.ts'
+import type { LoopEvent } from '../src/api/types'
 
 test.describe.configure({ mode: 'parallel' })
 
@@ -13,11 +15,10 @@ async function sendPrompt(page: Page, text: string) {
   await page.getByTestId('composer-send').click()
 }
 
-async function useCompact(page: Page, keep: string) {
+async function useCompact(page: Page) {
   await page.getByTestId('open-settings').click()
   await page.getByTestId('settings-tab-message').click()
   await page.getByTestId('view-compact').click()
-  await page.getByTestId('view-keep').fill(keep)
   await page.getByTestId('settings').getByRole('button', { name: '关闭对话框' }).click()
 }
 
@@ -49,14 +50,15 @@ function tailProbe(page: Page) {
   })
 }
 
-test('compact mode folds each turn\'s earlier replies and keeps the prompt visible', async ({ page }) => {
+test('compact is the default and folds each turn\'s short replies while prompts stay visible', async ({ page }) => {
   test.setTimeout(60_000)
   await page.goto('/')
   await expect(page.getByTestId('hero')).toBeVisible()
   await page.getByTestId('open-settings').click()
   await page.getByTestId('settings-tab-message').click()
   await expect(page.getByTestId('view-compact')).toHaveAttribute('aria-checked', 'true')
-  await expect(page.getByTestId('view-keep')).toHaveValue('1')
+  await expect(page.getByTestId('view-detailed')).toHaveAttribute('aria-checked', 'false')
+  await expect(page.getByTestId('view-keep')).toHaveCount(0)
   await page.getByTestId('view-detailed').click()
   await expect(page.getByTestId('view-detailed')).toHaveAttribute('aria-checked', 'true')
   await page.getByTestId('settings').getByRole('button', { name: '关闭对话框' }).click()
@@ -71,34 +73,33 @@ test('compact mode folds each turn\'s earlier replies and keeps the prompt visib
   await expect(page.getByTestId('assistant-message')).toHaveCount(3)
   await expect(page.getByTestId('tool-card')).toHaveCount(1)
 
-  await useCompact(page, '1')
-  await expect(page.getByTestId('fold-row')).toHaveCount(1)
+  await useCompact(page)
+  await expect(page.getByTestId('fold-row')).toHaveCount(2)
+  await expect(page.getByTestId('fold-row').locator('.fold-row-count')).toHaveText(['已折叠 3 条消息', '已折叠 1 条消息'])
   await expect(page.getByTestId('user-bubble')).toHaveCount(2)
   await expect(page.getByTestId('user-bubble').first()).toContainText('e2e-bash:echo fold-me')
-  await expect(page.getByTestId('assistant-message')).toHaveCount(2)
-  await expect(page.getByTestId('tool-card')).toHaveCount(0)
-
-  await page.getByTestId('fold-row-btn').click()
-  await expect(page.getByTestId('fold-row-btn')).toHaveAttribute('aria-expanded', 'true')
-  await expect(page.getByTestId('tool-card')).toHaveCount(1)
-  await page.getByTestId('fold-row-btn').click()
-  await expect(page.getByTestId('fold-row-btn')).toHaveAttribute('aria-expanded', 'false')
-  await expect(page.getByTestId('tool-card')).toHaveCount(0)
-
-  await useCompact(page, '0')
-  await expect(page.getByTestId('fold-row')).toHaveCount(2)
-  await expect(page.getByTestId('user-bubble')).toHaveCount(2)
   await expect(page.getByTestId('assistant-message')).toHaveCount(0)
+  await expect(page.getByTestId('tool-card')).toHaveCount(0)
+
+  await page.getByTestId('fold-row-btn').first().click()
+  await expect(page.getByTestId('fold-row-btn').first()).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.getByTestId('assistant-message')).toHaveCount(2)
+  await expect(page.getByTestId('tool-card')).toHaveCount(1)
+  await expect(page.getByTestId('fold-row').locator('.fold-row-count')).toHaveText(['已折叠 3 条消息', '已折叠 1 条消息'])
+  await page.getByTestId('fold-row-btn').first().click()
+  await expect(page.getByTestId('fold-row-btn').first()).toHaveAttribute('aria-expanded', 'false')
+  await expect(page.getByTestId('tool-card')).toHaveCount(0)
 
   const saved = await page.evaluate(() => [localStorage.getItem('ki-message-view'), localStorage.getItem('ki-message-view-keep')])
-  expect(saved).toEqual(['compact', '0'])
+  expect(saved).toEqual(['compact', null])
   await page.reload()
   await page.getByTestId('open-settings').click()
   await page.getByTestId('settings-tab-message').click()
   await expect(page.getByTestId('view-compact')).toHaveAttribute('aria-checked', 'true')
-  await expect(page.getByTestId('view-keep')).toHaveValue('0')
+  await expect(page.getByTestId('view-keep')).toHaveCount(0)
   await page.getByTestId('view-detailed').click()
   await page.getByTestId('settings').getByRole('button', { name: '关闭对话框' }).click()
+  expect(await page.evaluate(() => [localStorage.getItem('ki-message-view'), localStorage.getItem('ki-message-view-keep')])).toEqual(['detailed', null])
   await page.reload()
   await page.getByTestId('open-settings').click()
   await page.getByTestId('settings-tab-message').click()
@@ -113,7 +114,7 @@ test('opening a fold under the viewport keeps the row put and pauses follow-tail
     await sendPrompt(page, `fold-msg-${i}`)
     await expect(page.getByTestId('session-stats')).toContainText(`${i + 1} 轮 ·`)
   }
-  await useCompact(page, '0')
+  await useCompact(page)
   await expect(page.getByTestId('fold-row').first()).toBeVisible()
 
   await sendPrompt(page, 'e2e-delay-3000 keep-streaming')
@@ -162,7 +163,7 @@ test('expanding or collapsing the newest fold at the tail keeps following the bo
   }
   await sendPrompt(page, 'e2e-bash:echo fold-me')
   await expect(page.getByTestId('session-stats')).toContainText('9 轮 ·')
-  await useCompact(page, '0')
+  await useCompact(page)
   await page.evaluate(() => {
     const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
     el.scrollTop = el.scrollHeight
@@ -239,9 +240,9 @@ function seedBigFoldSession(home: string, cwd: string): { title: string; userNod
   reply('Second warmup reply.')
   const userNodeId = user('大回合')
   for (let i = 0; i < 45; i++) step(i)
-  reply('**大回合结束**：所有改动都已验证。')
+  reply(`**大回合结束**：所有改动都已验证。\n\n${'Every release note stays readable while the tool work folds away. '.repeat(8)}`)
   user('tail prompt')
-  reply('Tail reply.')
+  reply(`Tail reply. ${'Visible compact prose keeps the reader scrollable on a phone. '.repeat(10)}`)
   const dir = join(home, 'sessions', ws, `2026-09-26T15-00-00-000000000Z_${sid}`)
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, 'events.jsonl'), `${lines.join('\n')}\n`)
@@ -258,7 +259,6 @@ test.describe('big fold on a phone', () => {
     const { userNodeId } = seedBigFoldSession(home, cwd)
     await page.addInitScript(() => {
       localStorage.setItem('ki-message-view', 'compact')
-      localStorage.setItem('ki-message-view-keep', '1')
     })
     await page.goto('/')
     await page.getByTestId('mobile-nav-toggle').click()
@@ -272,7 +272,6 @@ test.describe('big fold on a phone', () => {
       return { scrollTop: Math.round(el.scrollTop) }
     }, userNodeId)
     expect(before.scrollTop).toBeGreaterThan(0)
-    await page.waitForTimeout(300)
 
     const probe = () => page.evaluate((fold: string) => {
       const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
@@ -284,33 +283,57 @@ test.describe('big fold on a phone', () => {
         tools: document.querySelectorAll('[data-testid="tool-card"]').length,
       }
     }, userNodeId)
-    const start = await probe()
+    const settled = async () => {
+      let previous = ''
+      for (let i = 0; i < 60; i++) {
+        const now = await probe()
+        const key = `${now.scrollTop}:${now.rowTop}`
+        if (key === previous) return now
+        previous = key
+        await page.waitForTimeout(50)
+      }
+      return probe()
+    }
+    const start = await settled()
     expect(start.tools).toBe(0)
 
     await page.locator(`[data-testid="fold-row"][data-fold="${userNodeId}"] [data-testid="fold-row-btn"]`).click()
-    for (const wait of [50, 300, 1200]) {
-      await page.waitForTimeout(wait)
-      const now = await probe()
-      expect(now.rowTop).toBe(start.rowTop)
-      expect(now.scrollTop).toBe(start.scrollTop)
-    }
-    const after = await probe()
-    expect(after.tools).toBeGreaterThan(0)
+    await expect.poll(async () => (await probe()).tools, { timeout: 10_000 }).toBeGreaterThan(0)
+    const after = await settled()
+    expect(after.rowTop).toBe(start.rowTop)
+    expect(after.scrollTop).toBe(start.scrollTop)
     expect(after.maxScroll).toBeGreaterThan(start.maxScroll)
   })
 })
 
-test('a running turn folds its replies like any finished turn', async ({ page }) => {
+test('a running turn folds its finished replies while live work stays visible', async ({ page }) => {
   test.setTimeout(60_000)
-  await page.goto('/')
-  await expect(page.getByTestId('hero')).toBeVisible()
-  await useCompact(page, '0')
-  await sendPrompt(page, `e2e-write-env e2e-delay-2500 ${Date.now()}`)
-  await expect(page.getByTestId('composer-stop')).toBeVisible({ timeout: 20_000 })
-  await expect(page.getByTestId('fold-row')).toHaveCount(1, { timeout: 20_000 })
-  await expect(page.getByTestId('user-bubble')).toHaveCount(1)
+  const fixture = await openStream(page, 0)
+  await useCompact(page)
+  const send = (event: LoopEvent) => page.evaluate(event => (window as unknown as { streamSend: (event: LoopEvent) => void }).streamSend(event), event)
+  const now = Date.now()
+  await send({ type: 'turn_start', runId: 'fold-live', seq: 1, timestamp: now })
+  await send({ type: 'message_end', runId: 'fold-live', seq: 2, entryId: 'fold-user', parentId: 'question', message: { role: 'user', timestamp: now, content: [{ type: 'text', text: 'Running fold request' }] } })
+  await send({ type: 'message_end', runId: 'fold-live', seq: 3, entryId: 'fold-short', parentId: 'fold-user', message: { role: 'assistant', timestamp: now, content: [{ type: 'text', text: 'Short finished reply' }] } })
+  await send({ type: 'message_end', runId: 'fold-live', seq: 4, entryId: 'fold-call', parentId: 'fold-short', message: { role: 'assistant', timestamp: now, content: [{ type: 'toolCall', id: 'fold-tool', name: 'exec_command', arguments: { cmd: 'sleep 30' } }] } })
+  await send({ type: 'tool_execution_start', runId: 'fold-live', seq: 5, toolCallId: 'fold-tool', toolName: 'exec_command', timestamp: now, args: { cmd: 'sleep 30' } })
+
+  await expect(page.getByTestId('user-bubble').filter({ hasText: 'Running fold request' })).toBeVisible()
+  await expect(page.getByTestId('composer-stop')).toBeVisible()
+  await expect(page.getByTestId('fold-row')).toHaveCount(1)
+  await expect(page.getByTestId('fold-row').locator('.fold-row-count')).toHaveText('已折叠 2 条消息')
+  await expect(page.getByTestId('fold-row-btn')).toHaveAttribute('aria-expanded', 'false')
   await expect(page.getByTestId('assistant-message')).toHaveCount(0)
-  await expect(page.getByTestId('tool-card')).toHaveCount(0)
+  await expect(page.locator('[data-testid="tool-card"][data-state="running"]')).toHaveCount(1)
+
+  await send({ type: 'tool_execution_end', runId: 'fold-live', seq: 6, toolCallId: 'fold-tool', toolName: 'exec_command', durationMs: 10, result: 'done' })
+  await send({ type: 'message_end', runId: 'fold-live', seq: 7, entryId: 'fold-final', parentId: 'fold-call', message: {
+    role: 'assistant', timestamp: now + 1000, stopReason: 'stop',
+    content: [{ type: 'text', text: `Long final reply ${'that stays visible in compact mode. '.repeat(12)}` }],
+  } })
+  await expect(page.getByTestId('assistant-message')).toContainText('Long final reply')
+  await expect(page.getByTestId('fold-row').locator('.fold-row-count')).toHaveText('已折叠 3 条消息')
+  expect(fixture.id).toBeTruthy()
 })
 
 test('a burst of streaming chunks keeps the main thread responsive', async ({ page }) => {

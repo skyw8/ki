@@ -551,7 +551,7 @@ func questionSideAllowsEntry(sess *session.Session, target string) bool {
 	return questionSideTargetAllowed(sess, target)
 }
 
-func (s *Server) getQuestionSide(w http.ResponseWriter, r *http.Request, snap *sessionSnap, limit, keep int) {
+func (s *Server) getQuestionSide(w http.ResponseWriter, r *http.Request, snap *sessionSnap, limit int) {
 	entries, err := session.AllEntries(snap.dir)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -650,10 +650,10 @@ func (s *Server) getQuestionSide(w http.ResponseWriter, r *http.Request, snap *s
 		return
 	}
 	if query.Get("view") == "compact" {
-		page := session.BuildCompact(visible, leaf, before, keep)
+		page := session.BuildCompact(visible, leaf, before)
 		if turnID != "" {
 			var found bool
-			page, found = session.BuildCompactTurn(visible, leaf, turnID, keep)
+			page, found = session.BuildCompactTurn(visible, leaf, turnID)
 			if !found {
 				http.Error(w, "turn not found", http.StatusNotFound)
 				return

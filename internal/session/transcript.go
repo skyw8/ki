@@ -257,6 +257,7 @@ func decodeMetadataCached(raw []byte, estimates contextEstimateCache) (Entry, In
 	e.System = ""
 	e.Summary = metadataPreview(e.Summary)
 	if m := e.Message; m != nil {
+		e.messageTextRunes = utf8.RuneCountInString(m.Text())
 		text := metadataPreview(m.Text())
 		var content []types.Content
 		if text != "" {
@@ -410,13 +411,13 @@ func (t *Transcript) Tail(leaf, before, turn string, limit int) (Tail, bool, err
 	}
 }
 
-func (t *Transcript) Compact(leaf, before, turn string, keep int) (CompactPage, bool, error) {
+func (t *Transcript) Compact(leaf, before, turn string) (CompactPage, bool, error) {
 	var plan CompactPage
 	found := true
 	if turn != "" {
-		plan, found = BuildCompactTurn(t.entries, leaf, turn, keep)
+		plan, found = BuildCompactTurn(t.entries, leaf, turn)
 	} else {
-		plan = BuildCompact(t.entries, leaf, before, keep)
+		plan = BuildCompact(t.entries, leaf, before)
 	}
 	if !found {
 		return CompactPage{}, false, nil
@@ -436,8 +437,8 @@ func (t *Transcript) Compact(leaf, before, turn string, keep int) (CompactPage, 
 		}
 	}
 	if turn != "" {
-		page, ok := BuildCompactTurn(entries, leaf, turn, keep)
+		page, ok := BuildCompactTurn(entries, leaf, turn)
 		return page, ok, nil
 	}
-	return BuildCompact(entries, leaf, before, keep), true, nil
+	return BuildCompact(entries, leaf, before), true, nil
 }

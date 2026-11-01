@@ -1,7 +1,7 @@
 import type { Entry, LoopEvent, SessionDetail, ViewState } from '../api/types'
 import { applyEvent, applyIndex, applyTail, compactBoundary, emptyView, hydrateEntries, hydrateTurn, leafEntries } from './model'
 
-export type TranscriptRequestKind = 'tail' | 'page' | 'index' | 'body' | 'turn' | 'keep' | 'compact'
+export type TranscriptRequestKind = 'tail' | 'page' | 'index' | 'body' | 'turn' | 'compact'
 
 export type TranscriptTicket = {
   kind: TranscriptRequestKind
@@ -75,7 +75,7 @@ export class TranscriptStore {
       if (ticket.oldestId !== this.value.oldestId || ticket.hasMore !== !!this.value.hasMore) return false
     }
     if (ticket.kind === 'compact' && ticket.leafId !== this.value.leafId) return false
-    if (ticket.kind === 'keep' || ticket.kind === 'turn') {
+    if (ticket.kind === 'turn') {
       if (ticket.turnTailId !== this.value.compactTurns?.find(turn => turn.id === ticket.turnId)?.tailId) return false
     }
     return true
@@ -104,12 +104,6 @@ export class TranscriptStore {
         const active = new Set(leafEntries(state.allEntries, state.leafId, state.compactTurns, false).map(entry => entry.id))
         if (!detail.compactTurns?.length || detail.compactTurns.some(turn => !active.has(turn.tailId))) return false
         next = compactBoundary(state, detail, ticket)
-        break
-      }
-      case 'keep': {
-        const turn = detail.compactTurns?.find(turn => turn.id === ticket.turnId)
-        if (!turn || turn.tailId !== ticket.turnTailId) return false
-        next = hydrateEntries(state, detail.entries ?? [], { compactTurns: [turn] })
         break
       }
       case 'turn':

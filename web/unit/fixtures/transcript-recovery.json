@@ -17,27 +17,6 @@
         "contextEstimate": {
           "message": 4
         }
-      },
-      {
-        "type": "message",
-        "id": "a2",
-        "parentId": "a1",
-        "timestamp": "",
-        "message": {
-          "role": "assistant",
-          "content": [
-            {
-              "type": "text",
-              "text": "second imported reply"
-            }
-          ],
-          "timestamp": 3000,
-          "latencyMs": 200,
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 6
-        }
       }
     ],
     "compactTurns": [
@@ -49,18 +28,15 @@
         "toolStates": [],
         "cumulativeElapsedMs": 300,
         "entryIds": [
-          "a1",
-          "a2"
+          "a1"
         ],
-        "visibleNodeIds": [
-          "a2"
-        ],
+        "visibleNodeIds": [],
         "omittedNodeIds": [
           "a1"
         ],
-        "hiddenCount": 1,
+        "hiddenCount": 2,
         "firstHiddenId": "a1",
-        "preview": "imported reply",
+        "preview": "second imported reply",
         "stats": {
           "turn": 1,
           "steps": 2,
@@ -750,27 +726,6 @@
         "contextEstimate": {
           "message": 1
         }
-      },
-      {
-        "type": "message",
-        "id": "call",
-        "parentId": "u",
-        "timestamp": "",
-        "message": {
-          "role": "assistant",
-          "content": [
-            {
-              "type": "toolCall",
-              "id": "t2",
-              "name": "Read"
-            }
-          ],
-          "durationMs": 0
-        },
-        "truncated": true,
-        "contextEstimate": {
-          "message": 10
-        }
       }
     ],
     "compactTurns": [
@@ -790,18 +745,12 @@
         ],
         "cumulativeElapsedMs": 0,
         "entryIds": [
-          "u",
-          "call"
+          "u"
         ],
         "visibleNodeIds": [
-          "u",
-          "t2"
+          "u"
         ],
-        "omittedNodeIds": [
-          "call",
-          "t1"
-        ],
-        "hiddenCount": 2,
+        "hiddenCount": 3,
         "firstHiddenId": "call",
         "preview": "Read",
         "stats": {
@@ -835,189 +784,6 @@
     "oldestId": "u"
   },
   "notice": {
-    "entries": [
-      {
-        "type": "message",
-        "id": "u",
-        "parentId": "",
-        "timestamp": "",
-        "message": {
-          "role": "user",
-          "content": [
-            {
-              "type": "text",
-              "text": "u"
-            }
-          ],
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 1
-        }
-      },
-      {
-        "type": "message",
-        "id": "final",
-        "parentId": "notice",
-        "timestamp": "",
-        "message": {
-          "role": "assistant",
-          "content": [
-            {
-              "type": "text",
-              "text": "final"
-            }
-          ],
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 2
-        }
-      }
-    ],
-    "compactTurns": [
-      {
-        "id": "u",
-        "tailId": "final",
-        "entryCount": 5,
-        "toolStates": [],
-        "cumulativeElapsedMs": 0,
-        "entryIds": [
-          "u",
-          "final"
-        ],
-        "visibleNodeIds": [
-          "u",
-          "final"
-        ],
-        "hiddenCount": 3,
-        "firstHiddenId": "call",
-        "preview": "notice",
-        "stats": {
-          "turn": 1,
-          "steps": 2,
-          "elapsedMs": 0,
-          "durationMs": 0,
-          "input": 0,
-          "output": 0,
-          "cacheRead": 0,
-          "cacheWrite": 0,
-          "tools": 1,
-          "toolFailures": 0,
-          "cacheMisses": 0,
-          "hasCost": false,
-          "cost": 0,
-          "ttftMs": 0,
-          "tps": null,
-          "decodeTokens": 0,
-          "decodeMs": 0,
-          "live": false
-        },
-        "stepCount": 2,
-        "lastStep": {
-          "ttftMs": 0,
-          "latencyMs": 0
-        }
-      }
-    ],
-    "hasMore": false,
-    "oldestId": "u"
-  },
-  "noticeClock": {
-    "entries": [
-      {
-        "type": "message",
-        "id": "human",
-        "parentId": "",
-        "timestamp": "",
-        "message": {
-          "role": "user",
-          "content": [
-            {
-              "type": "text",
-              "text": "human request"
-            }
-          ],
-          "timestamp": 1000,
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 4
-        }
-      },
-      {
-        "type": "message",
-        "id": "final",
-        "parentId": "notice",
-        "timestamp": "",
-        "message": {
-          "role": "assistant",
-          "content": [
-            {
-              "type": "text",
-              "text": "final"
-            }
-          ],
-          "timestamp": 5000,
-          "latencyMs": 250,
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 2
-        }
-      }
-    ],
-    "compactTurns": [
-      {
-        "id": "human",
-        "tailId": "final",
-        "entryCount": 5,
-        "assistantAt": 5000,
-        "toolStates": [],
-        "cumulativeElapsedMs": 4000,
-        "entryIds": [
-          "human",
-          "final"
-        ],
-        "visibleNodeIds": [
-          "human",
-          "final"
-        ],
-        "hiddenCount": 3,
-        "firstHiddenId": "call",
-        "preview": "notice",
-        "stats": {
-          "turn": 1,
-          "startedAt": 1000,
-          "steps": 2,
-          "elapsedMs": 4000,
-          "durationMs": 450,
-          "input": 0,
-          "output": 0,
-          "cacheRead": 0,
-          "cacheWrite": 0,
-          "tools": 1,
-          "toolFailures": 0,
-          "cacheMisses": 0,
-          "hasCost": false,
-          "cost": 0,
-          "ttftMs": 0,
-          "tps": null,
-          "decodeTokens": 0,
-          "decodeMs": 0,
-          "live": false
-        },
-        "stepCount": 2,
-        "lastStep": {
-          "ttftMs": 0,
-          "latencyMs": 250
-        }
-      }
-    ],
-    "hasMore": false,
-    "oldestId": "human"
-  },
-  "noticeZero": {
     "entries": [
       {
         "type": "message",
@@ -1084,6 +850,77 @@
     ],
     "hasMore": false,
     "oldestId": "u"
+  },
+  "noticeClock": {
+    "entries": [
+      {
+        "type": "message",
+        "id": "human",
+        "parentId": "",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "human request"
+            }
+          ],
+          "timestamp": 1000,
+          "durationMs": 0
+        },
+        "contextEstimate": {
+          "message": 4
+        }
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "human",
+        "tailId": "final",
+        "entryCount": 5,
+        "assistantAt": 5000,
+        "toolStates": [],
+        "cumulativeElapsedMs": 4000,
+        "entryIds": [
+          "human"
+        ],
+        "visibleNodeIds": [
+          "human"
+        ],
+        "hiddenCount": 4,
+        "firstHiddenId": "call",
+        "preview": "final",
+        "stats": {
+          "turn": 1,
+          "startedAt": 1000,
+          "steps": 2,
+          "elapsedMs": 4000,
+          "durationMs": 450,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 1,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "decodeTokens": 0,
+          "decodeMs": 0,
+          "live": false
+        },
+        "stepCount": 2,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 250
+        }
+      }
+    ],
+    "hasMore": false,
+    "oldestId": "human"
   },
   "oldPage": {
     "entries": [
@@ -1426,27 +1263,6 @@
         "contextEstimate": {
           "message": 5
         }
-      },
-      {
-        "type": "message",
-        "id": "final",
-        "parentId": "notice",
-        "timestamp": "",
-        "message": {
-          "role": "assistant",
-          "content": [
-            {
-              "type": "text",
-              "text": "final"
-            }
-          ],
-          "timestamp": 5000,
-          "latencyMs": 300,
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 2
-        }
       }
     ],
     "compactTurns": [
@@ -1458,16 +1274,14 @@
         "toolStates": [],
         "cumulativeElapsedMs": 3000,
         "entryIds": [
-          "human",
-          "final"
+          "human"
         ],
         "visibleNodeIds": [
-          "human",
-          "final"
+          "human"
         ],
-        "hiddenCount": 4,
+        "hiddenCount": 5,
         "firstHiddenId": "directive",
-        "preview": "notice",
+        "preview": "final",
         "stats": {
           "turn": 1,
           "startedAt": 2000,
@@ -1503,27 +1317,6 @@
     "entries": [
       {
         "type": "message",
-        "id": "prelude-answer",
-        "parentId": "directive",
-        "timestamp": "",
-        "message": {
-          "role": "assistant",
-          "content": [
-            {
-              "type": "text",
-              "text": "prelude answer"
-            }
-          ],
-          "timestamp": 1600,
-          "latencyMs": 100,
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 4
-        }
-      },
-      {
-        "type": "message",
         "id": "human",
         "parentId": "prelude-answer",
         "timestamp": "",
@@ -1552,16 +1345,14 @@
         "toolStates": [],
         "cumulativeElapsedMs": 100,
         "entryIds": [
-          "prelude-answer",
           "human"
         ],
         "visibleNodeIds": [
-          "human",
-          "prelude-answer"
+          "human"
         ],
-        "hiddenCount": 1,
+        "hiddenCount": 2,
         "firstHiddenId": "directive",
-        "preview": "runtime prelude",
+        "preview": "prelude answer",
         "stats": {
           "turn": 1,
           "startedAt": 2000,
@@ -1615,27 +1406,6 @@
         "contextEstimate": {
           "message": 4
         }
-      },
-      {
-        "type": "message",
-        "id": "prelude-answer",
-        "parentId": "directive",
-        "timestamp": "",
-        "message": {
-          "role": "assistant",
-          "content": [
-            {
-              "type": "text",
-              "text": "prelude answer"
-            }
-          ],
-          "timestamp": 1600,
-          "latencyMs": 100,
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 4
-        }
       }
     ],
     "compactTurns": [
@@ -1647,18 +1417,15 @@
         "toolStates": [],
         "cumulativeElapsedMs": 600,
         "entryIds": [
-          "directive",
-          "prelude-answer"
+          "directive"
         ],
-        "visibleNodeIds": [
-          "prelude-answer"
-        ],
+        "visibleNodeIds": [],
         "omittedNodeIds": [
           "directive"
         ],
-        "hiddenCount": 1,
+        "hiddenCount": 2,
         "firstHiddenId": "directive",
-        "preview": "runtime prelude",
+        "preview": "prelude answer",
         "stats": {
           "turn": 1,
           "startedAt": 1000,
@@ -1691,126 +1458,6 @@
     "oldestId": "directive"
   },
   "runtimeNoticeTail": {
-    "entries": [
-      {
-        "type": "message",
-        "id": "directive",
-        "parentId": "header",
-        "timestamp": "",
-        "message": {
-          "role": "user",
-          "content": [
-            {
-              "type": "text",
-              "text": "directive"
-            }
-          ],
-          "timestamp": 1000,
-          "origin": "agent",
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 3
-        }
-      },
-      {
-        "type": "message",
-        "id": "a1",
-        "parentId": "directive",
-        "timestamp": "",
-        "message": {
-          "role": "assistant",
-          "content": [
-            {
-              "type": "text",
-              "text": "first reply"
-            }
-          ],
-          "timestamp": 2000,
-          "latencyMs": 300,
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 3
-        }
-      },
-      {
-        "type": "message",
-        "id": "notice",
-        "parentId": "a1",
-        "timestamp": "",
-        "message": {
-          "role": "user",
-          "content": [
-            {
-              "type": "text",
-              "text": "notice"
-            }
-          ],
-          "timestamp": 3000,
-          "origin": "agent:child",
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 2
-        }
-      }
-    ],
-    "compactTurns": [
-      {
-        "id": "directive",
-        "tailId": "notice",
-        "entryCount": 4,
-        "assistantAt": 2000,
-        "toolStates": [],
-        "cumulativeElapsedMs": 1000,
-        "entryIds": [
-          "directive",
-          "a1",
-          "notice"
-        ],
-        "visibleNodeIds": [
-          "a1",
-          "notice"
-        ],
-        "omittedNodeIds": [
-          "directive"
-        ],
-        "hiddenCount": 1,
-        "firstHiddenId": "directive",
-        "preview": "directive",
-        "stats": {
-          "turn": 1,
-          "startedAt": 1000,
-          "steps": 1,
-          "elapsedMs": 1000,
-          "durationMs": 300,
-          "input": 0,
-          "output": 0,
-          "cacheRead": 0,
-          "cacheWrite": 0,
-          "tools": 0,
-          "toolFailures": 0,
-          "cacheMisses": 0,
-          "hasCost": false,
-          "cost": 0,
-          "ttftMs": 0,
-          "tps": null,
-          "decodeTokens": 0,
-          "decodeMs": 0,
-          "live": false
-        },
-        "stepCount": 1,
-        "lastStep": {
-          "ttftMs": 0,
-          "latencyMs": 300
-        }
-      }
-    ],
-    "hasMore": false,
-    "oldestId": "directive"
-  },
-  "runtimeNoticeTailZero": {
     "entries": [
       {
         "type": "message",
@@ -1884,103 +1531,6 @@
     "oldestId": "directive"
   },
   "runtimeOnly": {
-    "entries": [
-      {
-        "type": "message",
-        "id": "directive",
-        "parentId": "header",
-        "timestamp": "",
-        "message": {
-          "role": "user",
-          "content": [
-            {
-              "type": "text",
-              "text": "directive"
-            }
-          ],
-          "timestamp": 1000,
-          "origin": "agent",
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 3
-        }
-      },
-      {
-        "type": "message",
-        "id": "a2",
-        "parentId": "notice",
-        "timestamp": "",
-        "message": {
-          "role": "assistant",
-          "content": [
-            {
-              "type": "text",
-              "text": "final reply"
-            }
-          ],
-          "timestamp": 4000,
-          "latencyMs": 400,
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 3
-        }
-      }
-    ],
-    "compactTurns": [
-      {
-        "id": "directive",
-        "tailId": "a2",
-        "entryCount": 5,
-        "assistantAt": 4000,
-        "toolStates": [],
-        "cumulativeElapsedMs": 3000,
-        "entryIds": [
-          "directive",
-          "a2"
-        ],
-        "visibleNodeIds": [
-          "a2"
-        ],
-        "omittedNodeIds": [
-          "directive"
-        ],
-        "hiddenCount": 3,
-        "firstHiddenId": "directive",
-        "preview": "notice",
-        "stats": {
-          "turn": 1,
-          "startedAt": 1000,
-          "steps": 2,
-          "elapsedMs": 3000,
-          "durationMs": 700,
-          "input": 0,
-          "output": 0,
-          "cacheRead": 0,
-          "cacheWrite": 0,
-          "tools": 0,
-          "toolFailures": 0,
-          "cacheMisses": 0,
-          "hasCost": false,
-          "cost": 0,
-          "ttftMs": 0,
-          "tps": null,
-          "decodeTokens": 0,
-          "decodeMs": 0,
-          "live": false
-        },
-        "stepCount": 2,
-        "lastStep": {
-          "ttftMs": 0,
-          "latencyMs": 400
-        }
-      }
-    ],
-    "hasMore": false,
-    "oldestId": "directive"
-  },
-  "runtimeOnlyZero": {
     "entries": [
       {
         "type": "message",
@@ -2122,118 +1672,6 @@
     "oldestId": "u"
   },
   "trailingNotice": {
-    "entries": [
-      {
-        "type": "message",
-        "id": "u",
-        "parentId": "",
-        "timestamp": "",
-        "message": {
-          "role": "user",
-          "content": [
-            {
-              "type": "text",
-              "text": "u"
-            }
-          ],
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 1
-        }
-      },
-      {
-        "type": "message",
-        "id": "answer",
-        "parentId": "work",
-        "timestamp": "",
-        "message": {
-          "role": "assistant",
-          "content": [
-            {
-              "type": "text",
-              "text": "final answer"
-            }
-          ],
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 3
-        }
-      },
-      {
-        "type": "message",
-        "id": "notice",
-        "parentId": "answer",
-        "timestamp": "",
-        "message": {
-          "clientRequestId": "context-mail",
-          "role": "user",
-          "content": [
-            {
-              "type": "text",
-              "text": "context-only notice"
-            }
-          ],
-          "origin": "agent:child",
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 5
-        }
-      }
-    ],
-    "compactTurns": [
-      {
-        "id": "u",
-        "tailId": "notice",
-        "entryCount": 4,
-        "toolStates": [],
-        "cumulativeElapsedMs": 0,
-        "entryIds": [
-          "u",
-          "answer",
-          "notice"
-        ],
-        "visibleNodeIds": [
-          "u",
-          "answer",
-          "notice"
-        ],
-        "hiddenCount": 1,
-        "firstHiddenId": "work",
-        "preview": "working",
-        "stats": {
-          "turn": 1,
-          "steps": 2,
-          "elapsedMs": 0,
-          "durationMs": 0,
-          "input": 0,
-          "output": 0,
-          "cacheRead": 0,
-          "cacheWrite": 0,
-          "tools": 0,
-          "toolFailures": 0,
-          "cacheMisses": 0,
-          "hasCost": false,
-          "cost": 0,
-          "ttftMs": 0,
-          "tps": null,
-          "decodeTokens": 0,
-          "decodeMs": 0,
-          "live": false
-        },
-        "stepCount": 2,
-        "lastStep": {
-          "ttftMs": 0,
-          "latencyMs": 0
-        }
-      }
-    ],
-    "hasMore": false,
-    "oldestId": "u"
-  },
-  "trailingNoticeZero": {
     "entries": [
       {
         "type": "message",

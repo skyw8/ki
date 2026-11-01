@@ -1322,15 +1322,6 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	traceView := view == "trace"
 	inspectView := view == "inspect"
 	turnID := q.Get("turn")
-	keep := 1
-	if raw := q.Get("keep"); raw != "" {
-		var err error
-		keep, err = strconv.Atoi(raw)
-		if err != nil || keep < 0 || keep > 20 {
-			http.Error(w, "invalid compact keep", http.StatusBadRequest)
-			return
-		}
-	}
 	limit := session.DefaultViewLimit
 	if raw := q.Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
@@ -1363,7 +1354,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isQuestionSide(snap.configV) {
-		s.getQuestionSide(w, r, snap, limit, keep)
+		s.getQuestionSide(w, r, snap, limit)
 		return
 	}
 
@@ -1475,7 +1466,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	}
 	if turnID != "" {
 		if compact {
-			page, found, err := snap.transcript.Compact(snap.leafID, "", turnID, keep)
+			page, found, err := snap.transcript.Compact(snap.leafID, "", turnID)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
@@ -1509,7 +1500,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	}
 	if before != "" {
 		if compact {
-			page, _, err := snap.transcript.Compact(snap.leafID, before, "", keep)
+			page, _, err := snap.transcript.Compact(snap.leafID, before, "")
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
@@ -1566,7 +1557,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	runtime["leafId"] = snap.leafID
 	runtime["sessionStats"] = session.BuildStats(snap.entries, snap.leafID)
 	if compact {
-		page, _, err := snap.transcript.Compact(snap.leafID, "", "", keep)
+		page, _, err := snap.transcript.Compact(snap.leafID, "", "")
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return

@@ -345,14 +345,14 @@ func TestRemoteContextPublicProjections(t *testing.T) {
 	assertEntries("redaction", redacted)
 	assertEntries("repeated redaction", RedactProviderContext(redacted))
 	assertIndex("redacted index", BuildIndex(redacted))
-	assertEntries("compact", BuildCompact(entries, end.ID, "", 1).Entries)
-	assertEntries("redacted compact", BuildCompact(redacted, end.ID, "", 1).Entries)
+	assertEntries("compact", BuildCompact(entries, end.ID, "").Entries)
+	assertEntries("redacted compact", BuildCompact(redacted, end.ID, "").Entries)
 	turn, ok := BuildTurn(entries, end.ID, user.ID, "", 100)
 	if !ok {
 		t.Fatal("turn not found")
 	}
 	assertEntries("turn", turn.Entries)
-	compactTurn, ok := BuildCompactTurn(entries, end.ID, user.ID, 1)
+	compactTurn, ok := BuildCompactTurn(entries, end.ID, user.ID)
 	if !ok {
 		t.Fatal("compact turn not found")
 	}
@@ -369,7 +369,7 @@ func TestRemoteContextPublicProjections(t *testing.T) {
 	}
 	assertEntries("transcript tail", tail.Entries)
 	for _, turnID := range []string{"", user.ID} {
-		page, ok, err := tr.Compact(end.ID, "", turnID, 1)
+		page, ok, err := tr.Compact(end.ID, "", turnID)
 		if err != nil || !ok {
 			t.Fatalf("transcript compact: %v, %v", ok, err)
 		}

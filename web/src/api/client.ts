@@ -80,13 +80,12 @@ export class Client {
     return { sessions: (await res.json()) as SessionInfo[], etag: res.headers.get('ETag'), notModified: false }
   }
 
-  get(id: string, opts?: { fields?: 'runtime' | 'index' | 'system' | 'runtime,system'; before?: string; limit?: number; view?: 'compact'; keep?: number; turn?: string; signal?: AbortSignal }): Promise<SessionDetail> {
+  get(id: string, opts?: { fields?: 'runtime' | 'index' | 'system' | 'runtime,system'; before?: string; limit?: number; view?: 'compact'; turn?: string; signal?: AbortSignal }): Promise<SessionDetail> {
     const p = new URLSearchParams()
     if (opts?.fields) p.set('fields', opts.fields)
     if (opts?.before) p.set('before', opts.before)
     if (opts?.limit) p.set('limit', String(opts.limit))
     if (opts?.view) p.set('view', opts.view)
-    if (opts?.keep != null) p.set('keep', String(opts.keep))
     if (opts?.turn) p.set('turn', opts.turn)
     const q = p.size ? `?${p}` : ''
     return this.json(`/v1/sessions/${id}${q}`, { signal: opts?.signal })

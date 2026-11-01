@@ -285,7 +285,7 @@ serve 进程内维护 `session.Index`（id→dir 内存 map，见 `internal/sess
 | `fields=index,runtime` | tail + index + runtime |
 | `entry=` / `entries=` | 取未裁剪正文 |
 | `before=` + `limit=` | 从 `oldestId` 沿 leaf 向前翻页 |
-| `view=compact&keep=N` | compact 稀疏投影（见下） |
+| `view=compact` | compact 稀疏投影（见下） |
 | `turn=<id>` | 展开某一轮的隐藏 entry |
 | `view=trace` / `view=inspect` | CLI 诊断投影 |
 
@@ -321,23 +321,23 @@ Windows 的 `os.Stat(path)` 会延迟到 `os.SameFile` 才按路径读取 file I
 
 ## Compact 投影
 
-`GET /v1/sessions/{id}?view=compact&keep=N` 是面向 compact 阅读的稀疏投影，`keep` 为
-0–20，默认 1。首次最多返回最近 4 个完整人工输入 turn；同一请求加 `before=<oldestId>` 每次
-返回一个更早的完整 turn。响应带 `entries`、`compactTurns`、`hasMore`、`oldestId`。
-`oldestId` 为最早返回 turn 的输入 id，不位于折叠区中途。
+`GET /v1/sessions/{id}?view=compact` 是面向 compact 阅读的稀疏投影。首次最多返回最近 4 个
+完整人工输入 turn；同一请求加 `before=<oldestId>` 每次返回一个更早的完整 turn。响应带
+`entries`、`compactTurns`、`hasMore`、`oldestId`。`oldestId` 为最早返回 turn 的输入 id，
+不位于折叠区中途。
 
-每轮传人工 input、最后 N 个正常 assistant/tool 回复需要的正文、其后 runtime 通知，以及
-始终独立显示的压缩/中止状态；隐藏区用整轮计数、预览和统计表示。runtime user-role 消息
-（origin 非空且不以 `extension:` 开头，例如 subagent 指令、完成通知和 context-only 邮件）
-可以折叠，但不消耗 `keep`：首个保留或 live 的真实回复作为单一时间顺序边界，边界之前的
-普通回复和 runtime 通知一起折叠并计入 `hiddenCount`，之后保持原顺序显示。
+每轮按内容决定可见区：只有正文（不含 thinking 与 toolCall）长度 ≥300 个字符的 assistant
+回复保留正文；人工 input、压缩/中止生命周期行以及仍在运行的节点始终显示，其余 assistant
+回复、工具调用/结果和 runtime user-role 消息（origin 非空且不以 `extension:` 开头，例如
+subagent 指令、完成通知和 context-only 邮件）折叠并计入 `hiddenCount`。可见与隐藏节点可以
+交错，`entryIds` 按原始顺序只保留可见 entry，折叠区用整轮计数、预览和统计表示。
+runtime-only 会话仍保留首个可渲染节点的正文作为稳定 turn 锚点，即使该节点隐藏。跨大 turn
+不会循环下载已折叠的工具往返。初次读取会用增量 transcript 缓存确定完整分支与 turn 边界，
+不传整树 index。
 
-因此 `keep=1` 保留最后真实回复，不会被尾随通知挤掉；`keep=0` 且无 live 回复时所有通知与
-普通回复折叠。`keep` 足够保留所有真实回复时，首个真实回复之前的 runtime 指令仍折叠；完全
-没有真实回复的通知-only turn 也全部折叠。无 origin 或 `extension:` origin 的人工输入仍是
-turn 边界并始终显示；runtime-only 会话仍保留首个可渲染节点的正文作为稳定 turn 锚点，即使
-该节点隐藏。跨大 turn 不会循环下载已折叠的工具往返。初次读取会用增量 transcript 缓存
-确定完整分支与 turn 边界，不传整树 index。
+metadata 索引把 assistant 正文压成短预览，因此 `ReadTranscript` 解码时额外记录完整正文的
+字符数（`Entry.messageTextRunes`，不导出、不落盘），让只读 metadata 的 compact 投影也能
+做出与完整正文一致的可见性判断；读入完整正文后该字段为 0，按实际正文计算。
 
 ### compactTurns 字段
 
@@ -347,12 +347,12 @@ turn 边界并始终显示；runtime-only 会话仍保留首个可渲染节点�
 
 - `entryCount` 是快照覆盖的整轮 entry 数（含 metadata），用于拒绝迟到的旧投影；
 - `assistantAt` 是最近 assistant 的完成时间；
-- `toolStates` 仅含最近 assistant 工具批次的 `{id,finished,isError?}`，即使 keep=0 也能将
+- `toolStates` 仅含最近 assistant 工具批次的 `{id,finished,isError?}`：即使整轮折叠也能将
   正在执行或刚结束的调用与 SSE 精确去重，而不是传输全轮所有隐藏 ID；
 - `stats.startedAt` 是开头 user 的服务端时间，`stats.elapsedMs` 覆盖 assistant、工具结果和
   compaction 的最大完成时间；`cumulativeElapsedMs` 累计至该轮，未加载 index 时也包含窗口
   之前的耗时；
-- `stepCount` 是截至该轮的累计步骤数，`lastStep` 保存最近步骤的用量与耗时；即使 keep=0，
+- `stepCount` 是截至该轮的累计步骤数，`lastStep` 保存最近步骤的用量与耗时；即使整轮折叠，
   composer 的轮数、步骤数和最新用量也不因折叠减少。
 
 持久化 parent 边不改写；前端只在读取稀疏链时跨过省略段，收到整树 index 或展开正文后优先
@@ -364,9 +364,10 @@ turn 边界并始终显示；runtime-only 会话仍保留首个可渲染节点�
 
 显式展开使用同一 GET 的 `turn=<turnId>`（可配 `before` / `limit`），返回限定在该轮内的
 slim entry 页；其 `hasMore` / `oldestId` 是展开的局部游标，不能覆盖会话历史边界。
-`view=compact&turn=<entryId>&keep=N` 可重新投影某个已知 turn，也可把 detailed 页边界所在的
-半轮转换成完整 compact 轮。页预算通过缩小完整 turn 数量或进一步缩略可见正文满足，不能把
-一个 compact turn 截成两页。detailed 的计数分页契约保持不变。
+`view=compact&turn=<entryId>` 可重新投影某个已知 turn，也可把 detailed 页边界所在的
+半轮转换成完整 compact 轮。页预算通过缩小完整 turn 数量或进一步缩略可见正文满足；可见
+assistant 正文至少保留 300 字符的 UTF-8 前缀，避免缩略后与可见性判断不一致，且不能把一个
+compact turn 截成两页。detailed 的计数分页契约保持不变。
 
 ## 只读投影
 

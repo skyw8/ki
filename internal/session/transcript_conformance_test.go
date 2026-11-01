@@ -16,7 +16,6 @@ func TestTranscriptConformance(t *testing.T) {
 			History string `json:"history"`
 			Leaf    string `json:"leaf"`
 			Before  string `json:"before"`
-			Keep    int    `json:"keep"`
 		} `json:"cases"`
 	}
 	readConformanceJSON(t, filepath.Join(dir, "transcript-recovery-inputs.json"), &input)
@@ -31,7 +30,7 @@ func TestTranscriptConformance(t *testing.T) {
 			t.Fatalf("%s: missing/empty history %q", name, tc.History)
 		}
 		used[tc.History] = true
-		actual[name] = BuildCompact(history, tc.Leaf, tc.Before, tc.Keep)
+		actual[name] = BuildCompact(history, tc.Leaf, tc.Before)
 	}
 	for name := range input.Histories {
 		if !used[name] {

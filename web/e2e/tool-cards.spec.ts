@@ -50,7 +50,10 @@ async function openTranscript(page: Page) {
     : route.fallback())
   await page.route(url => url.pathname === '/v1/fs' && url.searchParams.get('preview') === '1', route =>
     route.fulfill({ status: 200, contentType: 'text/plain; charset=utf-8', body: 'complete output line\n' }))
-  await page.addInitScript(() => localStorage.setItem('ki-lang', 'en'))
+  await page.addInitScript(() => {
+    localStorage.setItem('ki-lang', 'en')
+    localStorage.setItem('ki-message-view', 'detailed')
+  })
   await page.goto('/')
   await openSessionRow(page, title)
   await expect(page.getByTestId('chat')).toBeVisible()
@@ -142,7 +145,10 @@ function editEntries(): Entry[] {
 }
 
 test('an edit renders a coloured unified diff with line numbers', async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem('ki-lang', 'en'))
+  await page.addInitScript(() => {
+    localStorage.setItem('ki-lang', 'en')
+    localStorage.setItem('ki-message-view', 'detailed')
+  })
   const headers = { Authorization: `Bearer ${serverToken()}` }
   const created = await page.request.post('/v1/sessions', { headers, data: {} })
   const { id } = await created.json() as { id: string }

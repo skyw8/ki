@@ -5622,7 +5622,7 @@ func TestSessionViewsCarryCacheMissOnTheAssistantEntry(t *testing.T) {
 	appendMessage(types.Message{Role: "user"})
 	prior := appendMessage(types.Message{Role: "assistant", Usage: &types.Usage{Input: 100, CacheRead: 29_900}})
 	target := appendMessage(types.Message{Role: "user"})
-	missed := appendMessage(types.Message{Role: "assistant", Usage: &types.Usage{Input: 30_000}})
+	missed := appendMessage(types.Message{Role: "assistant", Usage: &types.Usage{Input: 30_000}, Content: []types.Content{{Type: "text", Text: strings.Repeat("x", 300)}}})
 
 	check := func(path, shape string) map[string]any {
 		t.Helper()
@@ -5648,7 +5648,7 @@ func TestSessionViewsCarryCacheMissOnTheAssistantEntry(t *testing.T) {
 		t.Fatalf("%s did not return the missed assistant entry: %v", path, got)
 		return nil
 	}
-	check("/v1/sessions/"+id+"?view=compact&keep=1", "page")
+	check("/v1/sessions/"+id+"?view=compact", "page")
 	sparse := check("/v1/sessions/"+id+"?limit=1", "page")
 	for _, raw := range sparse["entries"].([]any) {
 		if raw.(map[string]any)["id"] == prior.ID {
@@ -5704,7 +5704,7 @@ func TestSessionStatsSnapshotCoversFullActiveBranch(t *testing.T) {
 	if err := sess.SetLeaf(tail.ID); err != nil {
 		t.Fatal(err)
 	}
-	for _, query := range []string{"?limit=1", "?view=compact&keep=0"} {
+	for _, query := range []string{"?limit=1", "?view=compact"} {
 		got := sessionGETURL(t, hs, "/v1/sessions/"+id+query)
 		raw, err := json.Marshal(got["sessionStats"])
 		if err != nil {
@@ -5786,7 +5786,7 @@ func TestSessionHistoryReenterAfterAppendKeepsAllPrompts(t *testing.T) {
 			}
 			query := "?limit=7"
 			if compact {
-				query = "?view=compact&keep=0"
+				query = "?view=compact"
 			}
 			seen := map[string]bool{}
 			cursor := ""

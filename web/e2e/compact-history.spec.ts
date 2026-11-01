@@ -7,7 +7,7 @@ import type { Entry, SessionDetail } from '../src/api/types'
 
 test.describe.configure({ mode: 'parallel' })
 
-test('older runtime notifications fold without consuming the final assistant keep slot after reload', async ({ page }) => {
+test('older runtime notifications fold while the human prompt stays visible after reload', async ({ page }) => {
   const headers = { Authorization: `Bearer ${serverToken()}` }
   const created = await page.request.post('/v1/sessions', { headers, data: {} })
   expect(created.ok()).toBeTruthy()
@@ -25,20 +25,18 @@ test('older runtime notifications fold without consuming the final assistant kee
   writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), activeLeafId: 'trailing', title }))
   await page.addInitScript(() => {
     localStorage.setItem('ki-message-view', 'compact')
-    if (localStorage.getItem('ki-message-view-keep') == null) localStorage.setItem('ki-message-view-keep', '1')
   })
-  const detail = await page.request.get(`/v1/sessions/${id}?view=compact&keep=1`, { headers })
+  const detail = await page.request.get(`/v1/sessions/${id}?view=compact`, { headers })
   expect(detail.ok()).toBeTruthy()
   const snapshot = await detail.json() as SessionDetail
-  expect(snapshot.compactTurns?.[0].hiddenCount).toBe(2)
-  expect(snapshot.compactTurns?.[0].visibleNodeIds).toEqual(['u', 'final', 'trailing'])
-  expect(snapshot.entries?.some(e => e.id === 'middle')).toBe(false)
+  expect(snapshot.compactTurns?.[0].hiddenCount).toBe(4)
+  expect(snapshot.compactTurns?.[0].visibleNodeIds).toEqual(['u'])
+  expect(snapshot.entries?.map(e => e.id)).toEqual(['u'])
   const assertVisible = async () => {
-    await expect(page.getByTestId('assistant-message')).toHaveText(/Final agent reply stays visible/)
-    await expect(page.getByRole('note')).toHaveCount(1)
-    await expect(page.getByRole('note')).toContainText('Trailing runtime notice')
+    await expect(page.getByTestId('assistant-message')).toHaveCount(0)
+    await expect(page.getByRole('note')).toHaveCount(0)
     await expect(page.locator('[data-item-key="middle"]')).toHaveCount(0)
-    await expect(page.getByTestId('fold-row')).toContainText('已折叠 2 条消息')
+    await expect(page.getByTestId('fold-row')).toContainText('已折叠 4 条消息')
   }
   await page.goto('/')
   await openSessionRow(page, title)
@@ -50,14 +48,9 @@ test('older runtime notifications fold without consuming the final assistant kee
   await expect(page.getByTestId('assistant-message')).toHaveCount(2)
   await expect(page.getByRole('note')).toHaveCount(2)
   await expect(page.getByRole('note').first()).toContainText('Middle runtime notice')
+  await expect(page.getByTestId('fold-row')).toContainText('已折叠 4 条消息')
   await page.getByTestId('fold-row-btn').click()
   await assertVisible()
-  await page.evaluate(() => localStorage.setItem('ki-message-view-keep', '0'))
-  await page.reload()
-  await openSessionRow(page, title)
-  await expect(page.getByTestId('assistant-message')).toHaveCount(0)
-  await expect(page.getByRole('note')).toHaveCount(0)
-  await expect(page.getByTestId('fold-row')).toContainText('已折叠 4 条消息')
 })
 
 async function seed(page: Page) {
@@ -77,7 +70,7 @@ async function seed(page: Page) {
       push({ type: 'message', id: `a-${t}-${n}`, message: { role: 'assistant', content: [{ type: 'text', text: `HIDDEN_BODY_${t}_${n}` }, { type: 'toolCall', id: call, name: 'exec_command', arguments: { cmd: `HIDDEN_ARGUMENT_${t}_${n}` } }] } })
       push({ type: 'message', id: `r-${t}-${n}`, message: { role: 'toolResult', toolCallId: call, toolName: 'exec_command', content: [{ type: 'text', text: `HIDDEN_RESULT_${t}_${n}` }] } })
     }
-    push({ type: 'message', id: `final${t}`, message: { role: 'assistant', content: [{ type: 'text', text: `## Final ${t}\n\n**Complete turn** with stable reading content.\n\n- First result\n- Second result\n\n\`\`\`ts\nconst turn = ${t}\n\`\`\`` }] } })
+    push({ type: 'message', id: `final${t}`, message: { role: 'assistant', content: [{ type: 'text', text: `Final ${t}: completed turn with stable reading content. ${'The final answer stays visible while the tool work folds away. '.repeat(8)}` }] } })
   }
   appendFileSync(join(dir, 'events.jsonl'), entries.map(e => JSON.stringify(e)).join('\n') + '\n')
   config.activeLeafId = parent
@@ -85,7 +78,6 @@ async function seed(page: Page) {
   writeFileSync(path, JSON.stringify(config))
   await page.addInitScript(() => {
     localStorage.setItem('ki-message-view', 'compact')
-    localStorage.setItem('ki-message-view-keep', '1')
   })
   await page.setViewportSize({ width: 390, height: 844 })
   return { id, open: async () => {
@@ -319,14 +311,13 @@ test('compact reload and expansion count replies without visible compaction meta
   const entries: Entry[] = [
     { type: 'message', id: 'input', parentId: '', message: { role: 'user', content: [{ type: 'text', text: 'Inspect compact count' }] } },
     { type: 'message', id: 'hidden', parentId: 'input', message: { role: 'assistant', content: [{ type: 'text', text: 'Earlier reply' }] } },
-    { type: 'message', id: 'final', parentId: 'hidden', message: { role: 'assistant', content: [{ type: 'text', text: 'Final reply' }] } },
+    { type: 'message', id: 'final', parentId: 'hidden', message: { role: 'assistant', content: [{ type: 'text', text: `Final reply. ${'Long compact prose keeps the final assistant row visible. '.repeat(8)}` }] } },
     { type: 'compaction', id: 'checkpoint', parentId: 'final', summary: 'Visible checkpoint', tokensBefore: 1000 },
   ]
   appendFileSync(join(dir, 'events.jsonl'), entries.map(e => JSON.stringify(e)).join('\n') + '\n')
   writeFileSync(path, JSON.stringify({ ...config, title, activeLeafId: 'checkpoint' }))
   await page.addInitScript(() => {
     localStorage.setItem('ki-message-view', 'compact')
-    localStorage.setItem('ki-message-view-keep', '1')
   })
   const open = async () => {
     await openSessionRow(page, title)

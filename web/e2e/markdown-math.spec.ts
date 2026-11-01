@@ -57,7 +57,10 @@ async function openTranscript(page: Page, routeBody = body): Promise<void> {
       },
     })
     : route.fallback())
-  await page.addInitScript(() => localStorage.setItem('ki-lang', 'en'))
+  await page.addInitScript(() => {
+    localStorage.setItem('ki-lang', 'en')
+    localStorage.setItem('ki-message-view', 'detailed')
+  })
   await page.goto('/')
   await openSessionRow(page, title)
   await expect(page.getByTestId('chat')).toBeVisible()

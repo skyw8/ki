@@ -14,8 +14,8 @@ function noticeEntries(): Entry[] {
   return fixtureInputs.histories.notice as Entry[]
 }
 
-function folds(state: ViewState, keep = 1) {
-  return foldReplies(state.nodes, { keep, summaries: state.compactTurns, loadedTurnIds: state.loadedTurnIds })
+function folds(state: ViewState) {
+  return foldReplies(state.nodes, { summaries: state.compactTurns, loadedTurnIds: state.loadedTurnIds })
     .filter(item => item.kind === 'fold').map(item => ({ id: item.id, count: item.count, remote: item.remote }))
 }
 
@@ -47,10 +47,8 @@ test('durable compaction statuses survive sparse recovery without folds, phantom
       expect(rows.map(n => n.empty)).toEqual([...empty])
       expect(rows.map(n => n.failed)).toEqual([...failed])
       expect(rows.some(n => n.running)).toBe(false)
-      for (const keep of [0, 1, 20]) {
-        const items = foldReplies(state.nodes, { keep, summaries: state.compactTurns, loadedTurnIds: state.loadedTurnIds })
-        expect(items.filter(i => i.kind === 'node' && i.node.kind === 'compaction').map(i => i.id)).toEqual([...ids])
-      }
+      const items = foldReplies(state.nodes, { summaries: state.compactTurns, loadedTurnIds: state.loadedTurnIds })
+      expect(items.filter(i => i.kind === 'node' && i.node.kind === 'compaction').map(i => i.id)).toEqual([...ids])
       expect(sessionStats(state).steps).toBe(wire.compactTurns.at(-1)!.stepCount)
     }
   }
@@ -157,7 +155,7 @@ test('B1 golden runtime notice hydration preserves canonical turn, tools, steps 
     expect(new Set(state.records.map(r => r.turnId))).toEqual(new Set(['u']))
     expect(new Set(state.records.map(r => r.turn))).toEqual(new Set([1]))
     expect(userRequests(state.allEntries, state.leafId, state.nodes, state.compactTurns).map(r => r.id)).toEqual(['u'])
-    expect(folds(state)[0].count).toBe(3)
+    expect(folds(state)[0].count).toBe(4)
   }
 })
 
@@ -165,16 +163,22 @@ test('B2 golden helper snapshot is idempotent and does not prove body coverage',
   const snapshot: SessionDetail = { id: 's', ...fixtures.helper, leafId: 'call', running: true }
   let state = loadHistory(snapshot)
   const original = folds(state)
-  expect(original).toEqual([{ id: 'fold:u', count: 2, remote: true }])
+  expect(original).toEqual([{ id: 'fold:u', count: 3, remote: true }])
   for (let i = 0; i < 8; i++) {
     const previous = state
     state = applyTail(state, snapshot)
     expect(state).toEqual(previous)
-    expect(state.nodes.map(n => n.id)).toEqual(['u', 't2'])
+    expect(state.nodes.map(n => n.id)).toEqual(['u'])
     expect(state.loadedTurnIds).not.toContain('u')
-    expect(bodyKind(state.entries.find(e => e.id === 'call')!)).toBe('helper')
     expect(folds(state)).toEqual(original)
   }
+  state = applyIndex(state, { id: 's', index: [
+    { type: 'message', id: 'u', role: 'user' },
+    { type: 'message', id: 'call', parentId: 'u', role: 'assistant' },
+  ] })
+  expect(bodyKind(state.allEntries.find(e => e.id === 'call')!)).toBe('index')
+  expect(state.loadedTurnIds).not.toContain('u')
+  expect(folds(state)).toEqual(original)
   state = hydrateTurn(state, 'u', state.entries)
   expect(state.loadedTurnIds).not.toContain('u')
   expect(folds(state)).toEqual(original)
@@ -196,7 +200,7 @@ test('helper replay, full body and index arrival commute without downgrading cov
     expect(state.nodes.map(n => n.id)).toEqual(['u', 'call', 't1', 't2'])
     expect(state.loadedTurnIds).toContain('u')
     expect(bodyKind(state.entries.find(e => e.id === 'call')!)).toBe('full')
-    expect(folds(state)).toEqual([{ id: 'fold:u', count: 2, remote: false }])
+    expect(folds(state)).toEqual([{ id: 'fold:u', count: 3, remote: false }])
     expect([...projectTurnStats(state.nodes, state.turnBase, state.compactTurns).values()][0])
       .toMatchObject({ turnId: 'u', steps: 1, tools: 2 })
   }
@@ -285,17 +289,16 @@ test('replayed runtime acceptance/start cannot duplicate a durable notification 
     for (const type of ['steer_accepted', 'message_start'] as const) {
       state = applyEvent(state, { type, message: notice })
       expect(state.nodes.map(n => n.id)).toEqual(ids)
-      expect(state.nodes.at(-1)?.id).toBe('final')
+      expect(state.leafId).toBe('final')
       expect(state.busy).toBe(running)
       expect(folds(state)).toEqual(folded)
     }
     state = applyEvent(state, { type: 'agent_end' })
     state = applyTail(state, snapshot)
     expect(state.nodes.map(n => n.id)).toEqual(ids)
-    expect(state.nodes.at(-1)?.id).toBe('final')
+    expect(state.leafId).toBe('final')
     state = hydrateEntries(state, noticeEntries())
     expect(state.nodes.map(n => n.id)).toEqual(['u', 'call', 'tool', 'notice', 'final'])
-    expect(foldReplies(state.nodes, { keep: 1 }).at(-1)?.id).toBe('final')
   }
 })
 
@@ -310,7 +313,6 @@ test('undrained runtime mail never displaces the terminal assistant but persiste
     message: { role: 'assistant', content: [{ type: 'text', text: 'answer' }] } })
   state = applyEvent(state, { type: 'agent_end' })
   expect(state.nodes.map(n => n.id)).toEqual(['u', 'a'])
-  expect(foldReplies(state.nodes, { keep: 1 }).at(-1)?.id).toBe('a')
   expect(state.busy).toBe(false)
 
   state = applyEvent(state, { type: 'agent_start' })
@@ -344,7 +346,7 @@ test('cancellation remains a standalone durable row across body recovery and com
   state = hydrateEntries(state, [message('u', undefined, 'user')])
   expect(state.nodes.map(n => n.kind)).toEqual(['user', 'cancellation'])
   expect(state.entries.at(-1)?.type).toBe('run_aborted')
-  expect(foldReplies(state.nodes, { keep: 0 }).map(n => n.id)).toEqual(['u', 'abort'])
+  expect(foldReplies(state.nodes, {}).map(n => n.id)).toEqual(['u', 'abort'])
 })
 
 test('same-frontier stale recovery may fill sparse gaps without regressing live execution', () => {
@@ -379,7 +381,7 @@ test('root prelude belongs to its first human identity without duplicate snapsho
     turnId: 'u', steps: 2, elapsedMs: 1_000,
   })
   expect(sessionStats(state)).toMatchObject({ turns: 1, turnElapsedMs: 1_000 })
-  expect(foldReplies(state.nodes, { keep: 20 }).map(n => n.id)).toEqual(['prelude', 'u', 'final'])
+  expect(foldReplies(state.nodes, {}).map(n => n.id)).toEqual(['fold:u', 'u'])
 })
 
 test('authoritative recovery refreshes present metadata but projected or stale tails cannot erase it', () => {
@@ -416,7 +418,7 @@ test('first human request adopts a runtime prelude identity immediately, includi
   const optimistic = state.nodes.find(n => n.kind === 'user' && n.clientRequestId === 'first-human')!
   expect(state.turn).toBe(1)
   expect(groupTurns(state.nodes).map(t => t.id)).toEqual([optimistic.id])
-  expect(sessionStats(state)).toMatchObject({ turns: 1, turnElapsedMs: 100 })
+  expect(sessionStats(state)).toMatchObject({ turns: 1, turnStartedAt: 2000 })
   state = applyEvent(state, { type: 'message_end', entryId: 'human', parentId: 'prelude-answer', message: human })
   const check = () => {
     expect(state.turn).toBe(1)
@@ -437,7 +439,7 @@ test('first human request adopts a runtime prelude identity immediately, includi
   expect(sessionStats(state)).toMatchObject({ turnElapsedMs: 3000 })
 })
 
-test('keep=0 composer counts only steps after the immutable snapshot tail across hydration orders', () => {
+test('composer counts only steps after the immutable snapshot tail across hydration orders', () => {
   const entries: Entry[] = [message('u', undefined, 'user')]
   for (let i = 1; i <= 40; i++) entries.push(message(`a${i}`, entries.at(-1)!.id, 'assistant'))
   const summary = {

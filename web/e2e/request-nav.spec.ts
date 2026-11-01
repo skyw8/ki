@@ -84,6 +84,7 @@ test('userRequests lists human prompts only', () => {
 test('request navigator jumps to an earlier user turn', async ({ page }) => {
   test.setTimeout(45_000)
   const prompts = ['nav-alpha-unique', 'nav-beta-unique', 'nav-gamma-unique', 'nav-delta-unique', 'nav-epsilon-unique']
+  await page.addInitScript(() => localStorage.setItem('ki-message-view', 'detailed'))
   await page.goto('/')
   await expect(page.getByTestId('hero')).toBeVisible()
   for (const prompt of prompts) {

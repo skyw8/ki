@@ -77,7 +77,6 @@ async function install(page: Page, sessions: SessionInfo[], details: SessionDeta
   await page.addInitScript(({ sessions, details, lang, mode }) => {
     localStorage.setItem('ki-lang', lang)
     localStorage.setItem('ki-message-view', mode)
-    localStorage.setItem('ki-message-view-keep', '1')
     const pending = new Map<number, (detail: SessionDetail) => void>()
     const controllers = new Map<number, ReadableStreamDefaultController<Uint8Array>>()
     const state: Fixture = window.sessionStateFixture = {
@@ -346,7 +345,7 @@ test.describe('reader authority', () => {
       cacheMiss: { missedTokens: 191_743, missRatio: 0.9829 },
       message: {
         role: 'assistant',
-        content: [{ type: 'text', text: 'The sparse row still shows its cache miss' }],
+        content: [{ type: 'text', text: `The sparse row still shows its cache miss. ${'Compact visible prose keeps this row on screen. '.repeat(8)}` }],
         usage: { input: 192_015, output: 204, cacheRead: 3_328 },
         latencyMs: 3_850,
         ttftMs: 3_130,
@@ -380,7 +379,7 @@ test.describe('reader authority', () => {
     const session = await createSession(page, 'root-conversion')
     const initial = snapshot(session, 'Root input')
     initial.entries!.push({ type: 'message', id: 'root-answer', parentId: initial.leafId,
-      message: { role: 'assistant', content: [{ type: 'text', text: 'Root answer survives failed projection' }] } })
+      message: { role: 'assistant', content: [{ type: 'text', text: `Root answer survives failed projection. ${'Compact visible prose keeps this row on screen. '.repeat(8)}` }] } })
     initial.leafId = 'root-answer'
     await install(page, [session], [initial], 'en', 'compact')
     await page.goto('/')
@@ -395,14 +394,14 @@ test.describe('reader authority', () => {
       }] }
     }, { initial })
     await open(page, session)
-    await expect(page.getByTestId('assistant-message')).toHaveText('Root answer survives failed projection')
+    await expect(page.getByTestId('assistant-message')).toContainText('Root answer survives failed projection')
     await expect(page.getByTestId('load-older')).toBeVisible()
     await expect(page.getByTestId('load-older')).toContainText('Retry')
     expect(await page.evaluate(() => window.sessionStateFixture.projectionReads)).toBe(1)
     await page.getByTestId('load-older').click()
     await expect.poll(() => page.evaluate(() => window.sessionStateFixture.projectionReads)).toBe(2)
     await expect(page.getByTestId('load-older')).toHaveCount(0)
-    await expect(page.getByTestId('assistant-message')).toHaveText('Root answer survives failed projection')
+    await expect(page.getByTestId('assistant-message')).toContainText('Root answer survives failed projection')
     expect(await page.evaluate(() => window.sessionStateFixture.prompts)).toEqual([])
   })
 

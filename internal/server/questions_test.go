@@ -151,7 +151,7 @@ func TestQuestionReplyAnswerFormReceipt(t *testing.T) {
 	if !ok || stored.AnswerForm == nil || *stored.AnswerForm != original {
 		t.Fatalf("stored form = %+v", stored.AnswerForm)
 	}
-	for _, query := range []string{"?view=compact&keep=0", "?fields=runtime"} {
+	for _, query := range []string{"?view=compact", "?fields=runtime"} {
 		code, projection := postJSON(t, hs, http.MethodGet, "/v1/sessions/"+sess.ID()+query, nil)
 		questions, _ := projection["questions"].([]any)
 		if code != http.StatusOK || len(questions) != 1 {
@@ -198,7 +198,7 @@ func TestQuestionReplyIdleStartsExactlyOnceAndGETProjection(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("answer committed %d times", count)
 	}
-	for _, query := range []string{"?view=compact&keep=0", "?fields=runtime"} {
+	for _, query := range []string{"?view=compact", "?fields=runtime"} {
 		code, projection := postJSON(t, hs, http.MethodGet, "/v1/sessions/"+sess.ID()+query, nil)
 		questions, _ := projection["questions"].([]any)
 		if code != http.StatusOK || len(questions) != 1 || questions[0].(map[string]any)["status"] != "answered" {

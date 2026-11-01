@@ -583,8 +583,6 @@
 .fold-row.expanded .fold-row-btn { border-style: solid; margin-bottom: 6px; }
 .fold-row-count { flex: none; color: var(--dsw-alias-label-caption); font-variant-numeric: tabular-nums; }
 .fold-row-preview { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-tertiary); }
-.view-keep { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
-.view-keep input { width: 72px; }
 
 .turn-end {
   display: flex;
@@ -3284,7 +3282,6 @@ select:focus-visible {
     min-height: 40px;
   }
   .fold-row-btn { height: 40px; }
-  .view-keep input { min-height: 40px; }
   .req-nav-toggle { width: 44px; height: 44px; }
   .req-nav-item { height: 44px; line-height: 44px; }
   .req-nav-filter { min-height: 40px; height: 40px; }

@@ -8,7 +8,7 @@ export type SyncPhase = 'idle' | 'listening' | 'recovering' | 'retrying' | 'paus
 export type SyncStatus = { sessionId: string | null; phase: SyncPhase }
 type Job = { abort: AbortController; ready: Promise<void>; resolve: () => void }
 type SyncOptions = {
-  transcriptOptions: () => { view?: 'compact'; keep?: number }
+  transcriptOptions: () => { view?: 'compact' }
   onListening?: (id: string) => void
   onSnapshot?: (id: string, detail: SessionDetail) => void
   onSettled?: () => void

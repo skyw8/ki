@@ -524,6 +524,9 @@ func compactViewEntryLimit(e Entry, limit int) Entry {
 		m.Details, m.External = nil, nil
 		m.Content = slices.Clone(m.Content[:min(len(m.Content), 32)])
 		textLimit := min(256, max(32, limit/(max(1, len(m.Content))*8)))
+		if m.Role == "assistant" {
+			textLimit = max(textLimit, utf8.UTFMax*compactVisibleTextRunes)
+		}
 		for i := range m.Content {
 			c := &m.Content[i]
 			c.Text = utf8Prefix(c.Text, textLimit)

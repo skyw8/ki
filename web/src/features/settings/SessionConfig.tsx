@@ -4,7 +4,7 @@ import { ICheck, ICopy, IEdit, IRegen } from '../../components/icons'
 import { Switch } from '../../components/Switch'
 import { copyText } from '../../lib/clipboard'
 import { useI18n, type Lang, type MsgKey, type TFn } from '../../i18n/index'
-import { clampCompactKeep, MAX_COMPACT_KEEP, type MessageView } from '../../lib/messageView'
+import type { MessageView } from '../../lib/messageView'
 import type { NotifyPermission } from '../../lib/notifications'
 import { toast } from '../../components/toast'
 import { localizedExtensionText } from './ExtensionPanel'
@@ -778,22 +778,6 @@ export function MessageSettings({ api, view, onView }: { api: Client; view: Mess
             <span>{t('settings.viewCompact')}</span>
           </button>
         </div>
-        {view.mode === 'compact' ? (
-          <div className="view-keep">
-            <label htmlFor="message-view-keep">{t('settings.viewKeep')}</label>
-            <input
-              id="message-view-keep"
-              data-testid="view-keep"
-              type="number"
-              min={0}
-              max={MAX_COMPACT_KEEP}
-              inputMode="numeric"
-              value={view.keep}
-              onChange={e => onView({ ...view, keep: clampCompactKeep(Number(e.target.value)) })}
-            />
-            <p className="cfg-hint">{t('settings.viewKeepHint', { max: MAX_COMPACT_KEEP })}</p>
-          </div>
-        ) : null}
       </section>
       <section className="preference-section">
         <div className="preference-copy">

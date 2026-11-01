@@ -261,26 +261,24 @@ func TestIndexedTranscriptMatchesFullProjections(t *testing.T) {
 		want := BuildBefore(all, leaf, before, limit)
 		equalJSON(t, Tail{Entries: want.Entries, HasMore: want.HasMore, OldestID: want.OldestID}, older)
 	}
-	for _, keep := range []int{0, 1, 3, 20} {
-		got, ok, err := indexed.Compact(leaf, "", "", keep)
+	got, ok, err := indexed.Compact(leaf, "", "")
+	if err != nil || !ok {
+		t.Fatalf("compact: %v", err)
+	}
+	equalJSON(t, BuildCompact(all, leaf, ""), got)
+	for _, turn := range got.Turns {
+		one, ok, err := indexed.Compact(leaf, "", turn.ID)
 		if err != nil || !ok {
-			t.Fatalf("compact: %v", err)
+			t.Fatalf("compact turn: %v", err)
 		}
-		equalJSON(t, BuildCompact(all, leaf, "", keep), got)
-		for _, turn := range got.Turns {
-			one, ok, err := indexed.Compact(leaf, "", turn.ID, keep)
-			if err != nil || !ok {
-				t.Fatalf("compact turn: %v", err)
-			}
-			want, _ := BuildCompactTurn(all, leaf, turn.ID, keep)
-			equalJSON(t, want, one)
-			detailed, ok, err := indexed.Tail(leaf, "", turn.ID, 10)
-			if err != nil || !ok {
-				t.Fatalf("detailed turn: %v", err)
-			}
-			wt, _ := BuildTurn(all, leaf, turn.ID, "", 10)
-			equalJSON(t, wt, detailed)
+		want, _ := BuildCompactTurn(all, leaf, turn.ID)
+		equalJSON(t, want, one)
+		detailed, ok, err := indexed.Tail(leaf, "", turn.ID, 10)
+		if err != nil || !ok {
+			t.Fatalf("detailed turn: %v", err)
 		}
+		wt, _ := BuildTurn(all, leaf, turn.ID, "", 10)
+		equalJSON(t, wt, detailed)
 	}
 	ids := []string{all[0].ID, leaf, all[0].ID, "missing"}
 	bodies, err := indexed.Lookup(ids)

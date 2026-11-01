@@ -31,7 +31,6 @@ async function history(page: Page, entries: Entry[], compact = false) {
     : route.fallback())
   await page.addInitScript(({ compact }) => {
     localStorage.setItem('ki-message-view', compact ? 'compact' : 'detailed')
-    localStorage.setItem('ki-message-view-keep', '1')
   }, { compact })
   return { id, open: async () => {
     await page.goto('/')
@@ -134,7 +133,6 @@ for (const compact of [false, true]) test(`session statistics cover the full bra
   await page.addInitScript(compact => {
     localStorage.setItem('ki-lang', 'en')
     localStorage.setItem('ki-message-view', compact ? 'compact' : 'detailed')
-    localStorage.setItem('ki-message-view-keep', '1')
   }, compact)
   await page.goto('/')
   await openSessionRow(page, title)
@@ -390,7 +388,7 @@ for (const layout of layouts) test.describe(`transcript presentation ${layout.na
     await page.getByTestId('chat-scroll').evaluate(el => { el.scrollTop = el.scrollHeight })
     await latest.click()
     await expect(page.getByTestId('chat')).toHaveAttribute('data-scroll-intent', 'reading')
-    await page.getByTestId('cancel-row').scrollIntoViewIfNeeded()
+    await page.getByTestId('chat-scroll').evaluate(el => { el.scrollTop = el.scrollHeight })
     await expect(page.getByTestId('cancel-row')).toBeVisible()
     await page.getByTestId('chat-scroll').evaluate(el => { el.scrollTop = Math.max(0, el.scrollTop - 100) })
     await page.getByTestId('to-bottom').click()

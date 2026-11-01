@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"ki/internal/types"
 )
@@ -179,7 +180,7 @@ func turnRanges(path []Entry) []turnRange {
 	return out
 }
 
-func BuildCompact(entries []Entry, leaf, before string, keep int) CompactPage {
+func BuildCompact(entries []Entry, leaf, before string) CompactPage {
 	path := leafPath(entries, leaf)
 	ranges := turnRanges(path)
 	elapsed := cumulativeTurnElapsed(path, ranges)
@@ -206,7 +207,7 @@ func BuildCompact(entries []Entry, leaf, before string, keep int) CompactPage {
 	prevPrompt, cacheReported := cacheBaseline(path[:base])
 	for i := start; i < end; i++ {
 		r := ranges[i]
-		turn, bodies, nextPrompt, nextReported := projectTurn(path[r.start:r.end], r.ordinal, min(20, max(0, keep)), prevPrompt, cacheReported)
+		turn, bodies, nextPrompt, nextReported := projectTurn(path[r.start:r.end], r.ordinal, prevPrompt, cacheReported)
 		prevPrompt, cacheReported = nextPrompt, nextReported
 		turn.StepCount = completedSteps(path[:r.end])
 		turn.CumulativeElapsedMS = elapsed[i]
@@ -248,7 +249,7 @@ func BuildTurn(entries []Entry, leaf, id, before string, limit int) (Tail, bool)
 	return Tail{}, false
 }
 
-func BuildCompactTurn(entries []Entry, leaf, id string, keep int) (CompactPage, bool) {
+func BuildCompactTurn(entries []Entry, leaf, id string) (CompactPage, bool) {
 	path := leafPath(entries, leaf)
 	ranges := turnRanges(path)
 	elapsed := cumulativeTurnElapsed(path, ranges)
@@ -256,7 +257,7 @@ func BuildCompactTurn(entries []Entry, leaf, id string, keep int) (CompactPage, 
 		part := path[r.start:r.end]
 		if slices.ContainsFunc(part, func(e Entry) bool { return e.ID == id }) {
 			prevPrompt, cacheReported := cacheBaseline(path[:r.start])
-			turn, bodies, _, _ := projectTurn(part, r.ordinal, min(20, max(0, keep)), prevPrompt, cacheReported)
+			turn, bodies, _, _ := projectTurn(part, r.ordinal, prevPrompt, cacheReported)
 			turn.StepCount = completedSteps(path[:r.end])
 			turn.CumulativeElapsedMS = elapsed[i]
 			return CompactPage{Entries: bodies, Turns: []CompactTurn{turn}, HasMore: r.ordinal > 1, OldestID: turn.ID}, true
@@ -265,11 +266,21 @@ func BuildCompactTurn(entries []Entry, leaf, id string, keep int) (CompactPage, 
 	return CompactPage{}, false
 }
 
-func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReported bool) (CompactTurn, []Entry, int64, bool) {
+// compactVisibleTextRunes is the assistant prose length that stays visible when a turn is folded.
+const compactVisibleTextRunes = 300
+
+func assistantTextRunes(e Entry) int {
+	if e.Message == nil {
+		return 0
+	}
+	return max(e.messageTextRunes, utf8.RuneCountInString(e.Message.Text()))
+}
+
+func projectTurn(path []Entry, ordinal int, prevPrompt int64, cacheReported bool) (CompactTurn, []Entry, int64, bool) {
 	type node struct {
 		id, preview   string
 		entries       []int
-		keepEligible  bool
+		visible       bool
 		alwaysVisible bool
 		suppressed    bool
 	}
@@ -312,7 +323,7 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 			batch = map[string]int{}
 			toolStates = []TurnToolState{}
 			lastStep = &TurnStep{Usage: m.Usage, TTFTMs: m.TTFTMs, LatencyMs: m.LatencyMs}
-			nodes = append(nodes, node{id: e.ID, preview: m.Text(), entries: []int{i}, keepEligible: m.StopReason != "aborted", alwaysVisible: m.StopReason == "aborted"})
+			nodes = append(nodes, node{id: e.ID, preview: m.Text(), entries: []int{i}, visible: assistantTextRunes(e) >= compactVisibleTextRunes, alwaysVisible: m.StopReason == "aborted"})
 			stats.Steps++
 			stats.DurationMS += m.LatencyMs
 			assistantAt = max(assistantAt, entryMillis(e))
@@ -352,7 +363,7 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 						nodes[at].entries = append(nodes[at].entries, i)
 					} else {
 						tools[c.ID] = len(nodes)
-						nodes = append(nodes, node{id: c.ID, preview: c.Name, entries: []int{i}, keepEligible: true})
+						nodes = append(nodes, node{id: c.ID, preview: c.Name, entries: []int{i}})
 					}
 				}
 			}
@@ -374,7 +385,7 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 				nodes[at].entries = append(nodes[at].entries, i)
 			} else {
 				tools[id] = len(nodes)
-				nodes = append(nodes, node{id: id, preview: m.ToolName, entries: []int{i}, keepEligible: true})
+				nodes = append(nodes, node{id: id, preview: m.ToolName, entries: []int{i}})
 			}
 		case nestedAudit:
 			id, _ := audit["toolCallId"].(string)
@@ -410,7 +421,7 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 				at = len(nodes)
 				tools[id] = at
 				name, _ := audit["toolName"].(string)
-				nodes = append(nodes, node{id: id, preview: name, keepEligible: true})
+				nodes = append(nodes, node{id: id, preview: name})
 			}
 			nodes[at].alwaysVisible = !nestedStates[stateAt].Finished
 			switch e.Type {
@@ -494,28 +505,14 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 		t.ID = nodes[0].id
 		selected[nodes[0].entries[0]] = true
 	}
-	var replies []int
-	for i, n := range nodes {
-		if n.keepEligible {
-			replies = append(replies, i)
-		}
-	}
-	cutoff := len(nodes)
-	if keep > 0 && len(replies) > 0 {
-		cutoff = replies[max(0, len(replies)-keep)]
-	}
-	for i, n := range nodes {
-		if n.keepEligible && n.alwaysVisible {
-			cutoff = min(cutoff, i)
-		}
-	}
 	hidden := map[int]bool{}
 	var folded []int
 	for i, n := range nodes {
-		if i < cutoff && !n.alwaysVisible {
-			hidden[i] = true
-			folded = append(folded, i)
+		if n.visible || n.alwaysVisible {
+			continue
 		}
+		hidden[i] = true
+		folded = append(folded, i)
 	}
 	hiddenCount := len(folded)
 	t.HiddenCount = hiddenCount

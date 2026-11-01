@@ -46,14 +46,14 @@ func codeModeViewFixture(finished bool) []Entry {
 			"IsError": true, "Details": map[string]any{"exact": true},
 		})
 		add(Entry{Type: "message", ID: "wait-result", Message: &types.Message{Role: "toolResult", ToolCallID: "wait", Timestamp: 2600}})
-		message("answer", "assistant", 2700, types.Content{Type: "text", Text: "final answer"})
+		message("answer", "assistant", 2700, types.Content{Type: "text", Text: strings.Repeat("final answer ", 30)})
 	}
 	return entries
 }
 
 func TestCodeModeCompactFoldsCompletedNestedBodiesAndRetainsStates(t *testing.T) {
 	entries := codeModeViewFixture(true)
-	page := BuildCompact(entries, "", "", 1)
+	page := BuildCompact(entries, "", "")
 	turn := page.Turns[0]
 	if !slices.Equal(turn.VisibleNodeIDs, []string{"human", "answer"}) ||
 		!slices.Equal(turn.EntryIDs, []string{"human", "answer"}) {
@@ -71,18 +71,17 @@ func TestCodeModeCompactFoldsCompletedNestedBodiesAndRetainsStates(t *testing.T)
 	}
 }
 
-func TestCodeModeCompactVisibleAuditReconstructsGroupedNode(t *testing.T) {
-	entries := codeModeViewFixture(true)
-	page := BuildCompact(entries, "", "", 20)
+func TestCodeModeCompactVisibleRunningAuditReconstructsGroupedNode(t *testing.T) {
+	entries := codeModeViewFixture(false)
+	page := BuildCompact(entries, "", "")
 	turn := page.Turns[0]
-	if turn.HiddenCount != 0 || slices.Contains(turn.VisibleNodeIDs, "notify") ||
-		slices.Contains(turn.VisibleNodeIDs, "notify-old") || slices.Contains(turn.VisibleNodeIDs, "child-end") {
-		t.Fatalf("audit frames became duplicate nodes: %+v", turn)
+	if !slices.Equal(turn.VisibleNodeIDs, []string{"human", "child"}) {
+		t.Fatalf("running nested tool missing: %+v", turn)
 	}
-	if !slices.Contains(turn.VisibleNodeIDs, "child") || turn.Stats.Tools != 3 {
+	if turn.Stats.Tools != 3 {
 		t.Fatalf("nested tool missing: %+v", turn)
 	}
-	for _, id := range []string{"child-start", "child-progress", "child-end", "notify"} {
+	for _, id := range []string{"child-start", "child-progress"} {
 		at := slices.IndexFunc(page.Entries, func(e Entry) bool { return e.ID == id })
 		if at < 0 {
 			t.Fatalf("missing reconstructable frame %s", id)
@@ -101,23 +100,21 @@ func TestCodeModeCompactVisibleAuditReconstructsGroupedNode(t *testing.T) {
 	}
 }
 
-func TestCodeModeCompactRunningNestedStartSurvivesZeroKeep(t *testing.T) {
+func TestCodeModeCompactRunningNestedStartSurvivesFolding(t *testing.T) {
 	entries := codeModeViewFixture(false)
-	for _, keep := range []int{0, 1} {
-		page := BuildCompact(entries, "", "", keep)
-		turn := page.Turns[0]
-		if !slices.Contains(turn.VisibleNodeIDs, "child") || !slices.Contains(turn.EntryIDs, "child-start") ||
-			!slices.Contains(turn.EntryIDs, "child-progress") {
-			t.Fatalf("running nested start lost under newer wait keep=%d: %+v", keep, turn)
-		}
-		if !slices.Contains(turn.ToolStates, TurnToolState{ID: "child"}) {
-			t.Fatalf("running nested state missing after batch reset: %+v", turn.ToolStates)
-		}
-		if slices.Contains(turn.OmittedNodeIDs, "child") {
-			t.Fatal("running nested card omitted from retained snapshot")
-		}
+	page := BuildCompact(entries, "", "")
+	turn := page.Turns[0]
+	if !slices.Contains(turn.VisibleNodeIDs, "child") || !slices.Contains(turn.EntryIDs, "child-start") ||
+		!slices.Contains(turn.EntryIDs, "child-progress") {
+		t.Fatalf("running nested start lost under newer wait: %+v", turn)
 	}
-	reprojected, found := BuildCompactTurn(entries, "", "child-start", 0)
+	if !slices.Contains(turn.ToolStates, TurnToolState{ID: "child"}) {
+		t.Fatalf("running nested state missing after batch reset: %+v", turn.ToolStates)
+	}
+	if slices.Contains(turn.OmittedNodeIDs, "child") {
+		t.Fatal("running nested card omitted from retained snapshot")
+	}
+	reprojected, found := BuildCompactTurn(entries, "", "child-start")
 	if !found || !slices.Contains(reprojected.Turns[0].EntryIDs, "child-start") {
 		t.Fatal("per-turn preference reprojection lost running audit")
 	}
@@ -169,7 +166,7 @@ func TestCodeModeDetailedAuditTailRetainsHumanAnchor(t *testing.T) {
 func TestCodeModeCompactBoundsNoisyProgressAndUsesCompletionClock(t *testing.T) {
 	entries := codeModeViewFixture(true)
 	end := slices.IndexFunc(entries, func(e Entry) bool { return e.ID == "child-end" })
-	page := BuildCompact(entries[:end+1], "", "", 20)
+	page := BuildCompact(entries[:end+1], "", "")
 	if page.Turns[0].Stats.ElapsedMS != 1500 {
 		t.Fatalf("nested completion did not advance turn clock: %+v", page.Turns[0].Stats)
 	}
@@ -186,7 +183,7 @@ func TestCodeModeCompactBoundsNoisyProgressAndUsesCompletionClock(t *testing.T) 
 			},
 		})
 	}
-	page = BuildCompact(entries, "", "", 0)
+	page = BuildCompact(entries, "", "")
 	raw, err := json.Marshal(page)
 	if err != nil || len(raw) > MaxViewPageBytes || len(page.Entries) != 3 ||
 		page.Entries[len(page.Entries)-1].ID != entries[len(entries)-1].ID {

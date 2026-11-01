@@ -137,6 +137,7 @@ type Entry struct {
 	Truncated        bool                    `json:"truncated,omitzero"`
 	ContextEstimate  *ContextEstimate        `json:"contextEstimate,omitempty"`
 	CacheMiss        *types.CacheMiss        `json:"cacheMiss,omitempty"`
+	messageTextRunes int
 }
 
 type ToolSchema struct {

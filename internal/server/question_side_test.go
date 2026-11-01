@@ -349,7 +349,7 @@ func TestQuestionSideStatsSnapshotExcludesInheritedUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, query := range []string{"?limit=1", "?view=compact&keep=0"} {
+	for _, query := range []string{"?limit=1", "?view=compact"} {
 		r := httptest.NewRequest(http.MethodGet, "/"+query, nil)
 		r.SetPathValue("id", side.ID())
 		w := httptest.NewRecorder()

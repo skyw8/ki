@@ -177,7 +177,7 @@ type sessionShowResult struct {
 func newSessionShowCommand() *cobra.Command {
 	var out outputFlags
 	var view, before, turn string
-	var limit, keep, turns int
+	var limit, turns int
 	var full, thinking, toolArgs, systemPrompt bool
 	cmd := &cobra.Command{
 		Use:   "show <id>",
@@ -192,7 +192,7 @@ func newSessionShowCommand() *cobra.Command {
 				return fmt.Errorf("invalid view %q", view)
 			}
 			return withConfig("client", nil, func(cfg config.Config) error {
-				result, err := loadSessionShow(cfg, args[0], view, before, turn, limit, keep, full)
+				result, err := loadSessionShow(cfg, args[0], view, before, turn, limit, full)
 				if err != nil {
 					return err
 				}
@@ -223,7 +223,6 @@ func newSessionShowCommand() *cobra.Command {
 	cmd.Flags().StringVar(&before, "before", "", "show entries older than this entry")
 	cmd.Flags().StringVar(&turn, "turn", "", "show one turn")
 	cmd.Flags().IntVar(&limit, "limit", session.DefaultViewLimit, "maximum detailed entries")
-	cmd.Flags().IntVar(&keep, "keep", 1, "visible replies per compact turn")
 	cmd.Flags().IntVar(&turns, "turns", 4, "maximum compact turns")
 	cmd.Flags().BoolVar(&full, "full", false, "do not slim large entry bodies")
 	cmd.Flags().BoolVar(&thinking, "thinking", false, "include thinking summaries")
@@ -370,8 +369,8 @@ func loadSessionSearch(cfg config.Config, query string, limit int, includeAgents
 	return out, more, err
 }
 
-func loadSessionShow(cfg config.Config, id, view, before, turn string, limit, keep int, full bool) (sessionShowResult, error) {
-	query := url.Values{"view": {view}, "limit": {strconv.Itoa(limit)}, "keep": {strconv.Itoa(keep)}}
+func loadSessionShow(cfg config.Config, id, view, before, turn string, limit int, full bool) (sessionShowResult, error) {
+	query := url.Values{"view": {view}, "limit": {strconv.Itoa(limit)}}
 	if before != "" {
 		query.Set("before", before)
 	}
@@ -397,12 +396,12 @@ func loadSessionShow(cfg config.Config, id, view, before, turn string, limit, ke
 		var page session.CompactPage
 		if turn != "" {
 			var found bool
-			page, found = session.BuildCompactTurn(entries, leaf, turn, keep)
+			page, found = session.BuildCompactTurn(entries, leaf, turn)
 			if !found {
 				return sessionShowResult{}, fmt.Errorf("turn not found")
 			}
 		} else {
-			page = session.BuildCompact(entries, leaf, before, keep)
+			page = session.BuildCompact(entries, leaf, before)
 		}
 		result.Entries, result.CompactTurns = page.Entries, page.Turns
 		result.HasMore, result.OldestID = page.HasMore, page.OldestID

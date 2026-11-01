@@ -19,7 +19,7 @@ func recoverLatestTurn(ctx context.Context, base, token, id string) error {
 		Running bool                  `json:"running"`
 		Turns   []session.CompactTurn `json:"compactTurns"`
 	}
-	if err := doJSONContext(ctx, base, token, http.MethodGet, path+"?view=compact&keep=0", nil, &detail); err != nil {
+	if err := doJSONContext(ctx, base, token, http.MethodGet, path+"?view=compact", nil, &detail); err != nil {
 		return err
 	}
 	if detail.Running {

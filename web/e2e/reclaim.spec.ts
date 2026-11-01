@@ -30,10 +30,9 @@ async function seed(page: Page, title: string) {
   return { id, title, dir, parent }
 }
 
-async function open(page: Page, id: string, title: string, keep: string) {
-  await page.addInitScript(({ id, keep }) => {
+async function open(page: Page, id: string, title: string) {
+  await page.addInitScript(({ id }) => {
     localStorage.setItem('ki-message-view', 'compact')
-    localStorage.setItem('ki-message-view-keep', keep)
     const scope = window as unknown as { streamSend: (v: unknown) => void }
     const original = window.fetch
     window.fetch = async (...args) => {
@@ -43,7 +42,7 @@ async function open(page: Page, id: string, title: string, keep: string) {
       }
       return original(...args)
     }
-  }, { id, keep })
+  }, { id })
   await page.route(url => url.pathname === `/v1/sessions/${id}` && !url.searchParams.has('turn') && !url.searchParams.has('before'), async route => {
     const response = await route.fetch()
     await route.fulfill({ response, json: { ...await response.json(), running: true } })
@@ -57,7 +56,7 @@ async function open(page: Page, id: string, title: string, keep: string) {
 test('a stale running tool folds away, stays settled after a reclaim, and never doubles the divider', async ({ page }) => {
   test.setTimeout(60_000)
   const f = await seed(page, `reclaim-a-${Date.now()}`)
-  const send = await open(page, f.id, f.title, '1')
+  const send = await open(page, f.id, f.title)
   const now = Date.now()
   await send({ type: 'agent_start', runId: 'live', seq: 1 })
   await send({ type: 'tool_execution_start', runId: 'live', seq: 2, toolCallId: 'tc-live', toolName: 'exec_command', args: { cmd: 'stale' }, timestamp: now })
@@ -74,7 +73,7 @@ test('a stale running tool folds away, stays settled after a reclaim, and never 
 
   await expect(page.getByTestId('turn-divider')).toHaveCount(1)
   await expect(page.getByTestId('turn-divider')).not.toHaveAttribute('data-live')
-  await expect(page.getByTestId('fold-row').locator('.fold-row-count')).toHaveText('已折叠 81 条消息')
+  await expect(page.getByTestId('fold-row').locator('.fold-row-count')).toHaveText('已折叠 82 条消息')
   await expect(page.getByTestId('tool-card')).toHaveCount(0)
 
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
@@ -88,7 +87,7 @@ test('a stale running tool folds away, stays settled after a reclaim, and never 
 test('a turn whose newest reply arrived after the snapshot keeps a single divider', async ({ page }) => {
   test.setTimeout(60_000)
   const f = await seed(page, `reclaim-b-${Date.now()}`)
-  const send = await open(page, f.id, f.title, '2')
+  const send = await open(page, f.id, f.title)
   const now = Date.now()
   await send({ type: 'agent_start', runId: 'live', seq: 1 })
   await send({ type: 'message_end', runId: 'live', seq: 2, entryId: 'a-live', message: { role: 'assistant', timestamp: now + 1000, latencyMs: 100, ttftMs: 20, usage: { input: 5, output: 5 }, content: [{ type: 'text', text: 'newest reply' }] } })
@@ -99,7 +98,7 @@ test('a turn whose newest reply arrived after the snapshot keeps a single divide
 
 test('parallel tools remain live and compact counts do not jump on expansion or completion', async ({ page }) => {
   const f = await seed(page, `parallel-count-${Date.now()}`)
-  const send = await open(page, f.id, f.title, '1')
+  const send = await open(page, f.id, f.title)
   const now = Date.now()
   await send({ type: 'agent_start', runId: 'parallel', seq: 1 })
   await send({ type: 'message_end', runId: 'parallel', seq: 2, entryId: 'a-parallel', message: { role: 'assistant', timestamp: now, content: [
@@ -124,7 +123,7 @@ test('parallel tools remain live and compact counts do not jump on expansion or 
 
 test('confirmed prompt keeps cumulative live elapsed aligned with its settled value', async ({ page }) => {
   const f = await seed(page, `clock-${Date.now()}`)
-  const send = await open(page, f.id, f.title, '1')
+  const send = await open(page, f.id, f.title)
   await send({ type: 'agent_end', runId: 'previous', seq: 1 })
   const seconds = (text: string) => {
     const match = text.match(/(?:(\d+)m)?([\d.]+)s/)
@@ -149,9 +148,9 @@ test('confirmed prompt keeps cumulative live elapsed aligned with its settled va
 })
 
 
-test('keep zero retains one accurate divider through streaming, settlement and fold toggles', async ({ page }) => {
+test('compact folding retains one accurate divider through streaming, settlement and fold toggles', async ({ page }) => {
   const f = await seed(page, `zero-count-${Date.now()}`)
-  const send = await open(page, f.id, f.title, '0')
+  const send = await open(page, f.id, f.title)
   await expect(page.getByTestId('turn-divider')).toHaveCount(1)
   await expect(page.getByTestId('turn-tools')).toContainText('0/40')
   await expect(page.getByTestId('session-stats')).toContainText('1 轮 · 40 步')

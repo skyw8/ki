@@ -1,6 +1,10 @@
 import { expect, test } from '@playwright/test'
 
 test.describe.configure({ mode: 'parallel' })
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('ki-message-view', 'detailed'))
+})
 test.use({ viewport: { width: 390, height: 844 } })
 
 const BAND = 434
