@@ -209,11 +209,30 @@ function displayOpen(line: string): boolean {
 function splitDisplayBlocks(text: string): string {
   const lines = text.split('\n')
   const out: string[] = []
+  let loneDisplay = false
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]
+    if (loneDisplay) {
+      const close = /^([ \t]*)\$\$(.*)$/.exec(line)
+      if (close && !/^[ \t]*\$\$.*\$\$[ \t]*$/.test(line)) {
+        loneDisplay = false
+        out.push(`${close[1]}$$`)
+        const rest = close[2].replace(/^[ \t]+/, '')
+        if (rest) out.push(rest)
+        continue
+      }
+      if (/^[ \t]*\$\$[ \t]*$/.test(line)) loneDisplay = false
+      out.push(line)
+      continue
+    }
     const oneLine = DISPLAY_ONE_LINE.exec(line)
     if (oneLine) {
       out.push(`${oneLine[1]}$$`, oneLine[2], `$$${oneLine[3]}`)
+      continue
+    }
+    if (/^[ \t]*\$\$[ \t]*$/.test(line)) {
+      loneDisplay = true
+      out.push(line)
       continue
     }
     if (!displayOpen(line)) {

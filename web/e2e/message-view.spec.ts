@@ -265,13 +265,9 @@ test.describe('big fold on a phone', () => {
     await openSessionRow(page, 'fold warmup')
     await expect(page.getByTestId('fold-row').first()).toBeVisible({ timeout: 20_000 })
 
-    const before = await page.evaluate((fold: string) => {
-      const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
-      const row = document.querySelector(`[data-testid="fold-row"][data-fold="${fold}"]`) as HTMLElement
-      el.scrollTop += row.getBoundingClientRect().top - el.getBoundingClientRect().top - el.clientHeight * 0.35
-      return { scrollTop: Math.round(el.scrollTop) }
-    }, userNodeId)
-    expect(before.scrollTop).toBeGreaterThan(0)
+    const row = page.locator(`[data-testid="fold-row"][data-fold="${userNodeId}"]`)
+    await page.getByTestId('chat-scroll').dispatchEvent('wheel', { deltaY: -1 })
+    await row.scrollIntoViewIfNeeded()
 
     const probe = () => page.evaluate((fold: string) => {
       const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
@@ -295,9 +291,10 @@ test.describe('big fold on a phone', () => {
       return probe()
     }
     const start = await settled()
+    expect(start.rowTop).toBeGreaterThanOrEqual(0)
     expect(start.tools).toBe(0)
 
-    await page.locator(`[data-testid="fold-row"][data-fold="${userNodeId}"] [data-testid="fold-row-btn"]`).click()
+    await row.locator('[data-testid="fold-row-btn"]').click()
     await expect.poll(async () => (await probe()).tools, { timeout: 10_000 }).toBeGreaterThan(0)
     const after = await settled()
     expect(after.rowTop).toBe(start.rowTop)

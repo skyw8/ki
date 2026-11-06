@@ -119,3 +119,12 @@ test('a math error keeps the source instead of breaking the message', async ({ p
   await expect(assistant.locator('.katex-error')).toHaveCount(1)
   await expect(assistant.locator('.katex-error')).toContainText('\\frac')
 })
+
+test('prose after a display close stays outside the formula', async ({ page }) => {
+  await openTranscript(page, 'Before.\n\n$$\n\\frac{a}{b}\n$$ tail text\n\nAfter.')
+  const assistant = page.getByTestId('assistant-message').last()
+  await expect(assistant.locator('.katex-display')).toHaveCount(1)
+  await expect(assistant.locator('.katex-error')).toHaveCount(0)
+  await expect(assistant).toContainText('tail text')
+  await expect(assistant).toContainText('After.')
+})

@@ -41,7 +41,8 @@ test('late reference definitions resolve across settled segments and completion 
   await expect(page.getByTestId('assistant-message').locator('.md-seg')).not.toHaveCount(0)
   const final = source + '[target]: https://example.com/reference\n'
   await send({ type: 'message_update', runId: 'reference', seq: 2, messageStream: 1, message: message(final) })
-  await expect(page.getByTestId('assistant-message')).toContainText('[target]:')
+  const link = page.getByTestId('assistant-message').getByRole('link', { name: 'reference', exact: true })
+  await expect(link).toHaveAttribute('href', 'https://example.com/reference')
   await page.evaluate(() => { (window as unknown as { oldRoot: Element | null }).oldRoot = document.querySelector('[data-stream-seq]') })
   await page.route(`**/v1/sessions/${f.id}`, route => route.fulfill({ json: {
     id: f.id, title: f.title, running: false, leafId: 'final',
@@ -50,7 +51,6 @@ test('late reference definitions resolve across settled segments and completion 
   await send({ type: 'message_end', runId: 'reference', seq: 3, entryId: 'final', message: message(final) })
   await send({ type: 'agent_end', runId: 'reference', seq: 4 })
   await page.evaluate(() => (window as unknown as { streamClose: () => void }).streamClose())
-  const link = page.getByTestId('assistant-message').getByRole('link', { name: 'reference', exact: true })
   await expect(link).toHaveAttribute('href', 'https://example.com/reference')
   await expect(page.getByTestId('assistant-message').locator('strong')).toHaveCount(150)
   await expect(page.getByTestId('composer-stop')).toHaveCount(0)

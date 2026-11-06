@@ -252,27 +252,39 @@ export const Markdown = memo(function Markdown({
   return <div ref={root} data-stream-seq={revision?.seq}>{pieces}</div>
 })
 
+const LIVE_RENDER_CHARS = 4096
+const LIVE_RENDER_MIN_MS = 180
+const LIVE_RENDER_MAX_MS = 1600
+
+function shownText(text: string, live: boolean, small: boolean, rendered: string, last: string): string {
+  if (live && small) return text
+  if (rendered && text.startsWith(rendered)) return rendered
+  if (last && text.startsWith(last)) return last
+  return rendered || last
+}
+
 const MarkdownPiece = memo(function MarkdownPiece({ text, live = false, deferOffscreen = false, className }: { text: string; live?: boolean; deferOffscreen?: boolean; className?: string }) {
   const { t } = useI18n()
   const [blocks] = useState(() => new MarkdownBlockSplitter())
   const root = useRef<HTMLDivElement>(null)
   const wasLive = useRef(live)
   if (live) wasLive.current = true
-  const [admitted, setAdmitted] = useState(false)
-  const small = text.length <= 4096
-  useEffect(() => {
-    if (!live || admitted || !small) return
-    return queueMarkdown(() => setAdmitted(true), () => root.current, 1)
-  }, [live, admitted, small])
-  const immediate = wasLive.current && admitted && small
-  const [formatted, setFormatted] = useState('')
+  const latest = useRef(text)
+  latest.current = text
+  const [rendered, setRendered] = useState('')
+  const lastShown = useRef('')
   const [explicit, setExplicit] = useState(false)
   const allowed = text.length <= 64 * 1024 || explicit
-  const ready = immediate || !live && formatted === text
-  useTranscriptRowMeasurement([ready, allowed])
+  const small = text.length <= LIVE_RENDER_CHARS
+  const display = shownText(text, live, small, rendered, lastShown.current)
+  if (display) lastShown.current = display
+  const advancedAt = useRef(0)
+  const queued = useRef<(() => void) | null>(null)
+  useTranscriptRowMeasurement([display, allowed])
+  useEffect(() => () => { queued.current?.() }, [])
   useEffect(() => {
-    if (immediate || live || !allowed || formatted === text) return
-    const enqueue = () => queueMarkdown(() => setFormatted(text), () => root.current, wasLive.current ? 1 : 0)
+    if (live || !allowed || display === text) return
+    const enqueue = () => queueMarkdown(() => setRendered(latest.current), () => root.current, wasLive.current ? 1 : 0)
     if (!deferOffscreen || !root.current) return enqueue()
     let cancel: (() => void) | undefined
     const observer = new IntersectionObserver(entries => {
@@ -282,10 +294,21 @@ const MarkdownPiece = memo(function MarkdownPiece({ text, live = false, deferOff
     })
     observer.observe(root.current)
     return () => { observer.disconnect(); cancel?.() }
-  }, [text, live, deferOffscreen, allowed, formatted, immediate])
-  return <div ref={root} data-md-block="1" data-md-pending={!live && !ready && allowed ? '1' : undefined}>
-    {!live && !allowed && <button type="button" className="body-load" onClick={() => setExplicit(true)}>{t('chat.formatMarkdown')}</button>}
-    {ready ? <Streamdown className={segClass(className)} plugins={plugins} mode={live ? 'streaming' : 'static'} isAnimating={live} {...shared} parseMarkdownIntoBlocksFn={live ? blocks.split : blocksFor}>{text}</Streamdown>
+  }, [text, live, deferOffscreen, allowed, display, rendered])
+  useEffect(() => {
+    if (!live || small || !allowed || display === text) return
+    const elapsed = performance.now() - advancedAt.current
+    const wait = display ? Math.max(0, Math.min(LIVE_RENDER_MAX_MS, Math.max(LIVE_RENDER_MIN_MS, Math.round(text.length / 24))) - elapsed) : 0
+    const timer = window.setTimeout(() => {
+      advancedAt.current = performance.now()
+      queued.current?.()
+      queued.current = queueMarkdown(() => setRendered(latest.current), () => root.current, 1)
+    }, wait)
+    return () => window.clearTimeout(timer)
+  }, [live, small, allowed, display, text])
+  return <div ref={root} data-md-block="1" data-md-pending={!live && display !== text && allowed ? '1' : undefined}>
+    {!allowed && <button type="button" className="body-load" onClick={() => setExplicit(true)}>{t('chat.formatMarkdown')}</button>}
+    {display ? <Streamdown className={segClass(className)} plugins={plugins} mode={live ? 'streaming' : 'static'} isAnimating={live} {...shared} parseMarkdownIntoBlocksFn={live ? blocks.split : blocksFor}>{display}</Streamdown>
       : <PlainText text={text} />}
   </div>
 })

@@ -28,11 +28,14 @@ test('offscreen stream blocks keep their source, format on visibility and finish
   const first = root.locator('[data-md-block]').first()
   await page.waitForTimeout(500)
   await expect(first).toHaveAttribute('data-md-pending', '1')
-  await expect(first.locator('[data-md-tail]')).toContainText('Paragraph 0 **formatted-marker**')
-  expect((await root.textContent())?.match(/Paragraph \d+/g)?.length).toBe(180)
+  await expect(first.locator('strong').first()).toHaveText('formatted-marker')
+  const sealed = root.locator('[data-md-block]').nth(1)
+  await expect(sealed).toHaveAttribute('data-md-pending', '1')
+  await expect(sealed.locator('[data-md-tail]')).toContainText('Paragraph')
   await page.getByTestId('chat-scroll').dispatchEvent('wheel', { deltaY: -1 })
   await page.getByTestId('chat-scroll').evaluate(el => { el.scrollTop = 0 })
-  await expect(first.locator('strong').first()).toHaveText('formatted-marker')
+  await expect.poll(() => first.getAttribute('data-md-pending')).toBe(null)
+  await expect.poll(() => first.locator('strong').count()).toBeGreaterThan(1)
   await send({ type: 'message_end', runId: 'budget', seq: 3, entryId: 'final', message: { role: 'assistant', content: [{ type: 'text', text }] } })
   await expect(root.locator('[data-md-pending]')).toHaveCount(0)
   await expect(root.locator('strong')).toHaveCount(180)
@@ -158,25 +161,52 @@ test('paragraph-shaped streams parse each block once, not per delta', async ({ p
   }).toBe(400)
 })
 
-test('an unbroken block is painted until it closes, then parsed', async ({ page }) => {
+test('an unbroken block keeps rendering while it streams', async ({ page }) => {
   test.setTimeout(120_000)
   await openStream(page, 0)
   const lines = Array.from({ length: 200 }, (_, i) => `- item ${i} ${'x'.repeat(110)}\n`)
   const send = (event: unknown) => page.evaluate(event => (window as unknown as { streamSend: (event: unknown) => void }).streamSend(event), event)
+  const message = page.getByTestId('assistant-message').first()
   await send({ type: 'message_update', runId: 'unbroken', seq: 1, messageStream: 1, message: { role: 'assistant', content: [{ type: 'text', text: lines.slice(0, 61).join('') }] } })
-  await expect(page.getByTestId('assistant-message').first()).toContainText('item 60', { timeout: 60_000 })
-  await expect(page.locator('[data-md-tail]')).toHaveCount(1)
-  await expect(page.locator('[data-md-tail]')).toContainText('- item 60')
-  await expect(page.getByTestId('assistant-message').first().locator('li')).toHaveCount(0)
+  await expect(message).toContainText('item 60', { timeout: 60_000 })
+  await expect(message.locator('li').first()).toBeVisible()
+  await expect(page.locator('[data-md-tail]')).toHaveCount(0)
   const text = lines.join('')
   await send({ type: 'message_update', runId: 'unbroken', seq: 2, messageStream: 1, message: { role: 'assistant', content: [{ type: 'text', text }] } })
-  await expect(page.getByTestId('assistant-message').first()).toContainText('item 199', { timeout: 60_000 })
-  await expect(page.locator('[data-md-tail]')).toHaveCount(1)
-  await expect(page.locator('[data-md-tail]')).toContainText('- item 199')
-  await expect(page.getByTestId('assistant-message').first().locator('li')).toHaveCount(0)
-  await send({ type: 'message_end', runId: 'unbroken', seq: 3, entryId: 'final', message: { role: 'assistant', content: [{ type: 'text', text }] } })
+  await expect(message).toContainText('item 199', { timeout: 30_000 })
+  await expect(message.locator('li')).toHaveCount(200)
   await expect(page.locator('[data-md-tail]')).toHaveCount(0)
-  await expect(page.getByTestId('assistant-message').first().locator('li')).toHaveCount(200)
-  const rendered = (await page.getByTestId('assistant-message').first().textContent()) ?? ''
+  await send({ type: 'message_end', runId: 'unbroken', seq: 3, entryId: 'final', message: { role: 'assistant', content: [{ type: 'text', text }] } })
+  await expect(message.locator('li')).toHaveCount(200)
+  await expect(page.locator('[data-md-tail]')).toHaveCount(0)
+  expect(await message.locator('li').count()).toBe(200)
+  const rendered = (await message.textContent()) ?? ''
   expect(rendered.match(/item \d+ /g)?.length).toBe(200)
+})
+
+test('a long math answer never reverts rendered formulas to source', async ({ page }) => {
+  test.setTimeout(120_000)
+  await openStream(page, 0)
+  const send = (event: unknown) => page.evaluate(event => (window as unknown as { streamSend: (event: unknown) => void }).streamSend(event), event)
+  const doc = Array.from({ length: 60 }, (_, i) => `Paragraph ${i} with an inline formula $\\frac{a_${i}}{b_${i}}$ and enough text after it. `).join('')
+  await page.evaluate(() => {
+    const samples: Array<{ katex: number; tail: number }> = []
+    ;(window as unknown as { samples: typeof samples }).samples = samples
+    window.setInterval(() => {
+      const root = document.querySelector('[data-testid="assistant-message"]')
+      if (!root) return
+      samples.push({ katex: root.querySelectorAll('.katex').length, tail: root.querySelectorAll('[data-md-tail]').length })
+    }, 16)
+  })
+  for (let at = 0; at < doc.length; at += 40) {
+    await send({ type: 'message_update', runId: 'math', seq: at, messageStream: 1, message: { role: 'assistant', content: [{ type: 'text', text: doc.slice(0, at + 40) }] } })
+    await page.waitForTimeout(60)
+  }
+  await send({ type: 'message_end', runId: 'math', seq: 99_999, entryId: 'final', message: { role: 'assistant', content: [{ type: 'text', text: doc }] } })
+  await expect(page.getByTestId('assistant-message').first().locator('.katex').first()).toBeVisible()
+  const samples = await page.evaluate(() => (window as unknown as { samples: Array<{ katex: number; tail: number }> }).samples)
+  const firstRendered = samples.findIndex(sample => sample.katex > 0)
+  expect(firstRendered).toBeGreaterThan(-1)
+  const reverted = samples.slice(firstRendered).filter(sample => sample.katex === 0 || sample.tail > 0)
+  expect(reverted, `states after first render: ${JSON.stringify(samples.slice(firstRendered).slice(0, 20))}`).toEqual([])
 })

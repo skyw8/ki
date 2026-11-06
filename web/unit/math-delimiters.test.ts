@@ -29,6 +29,12 @@ test('display math on one line gets its own fence lines', () => {
   expect(normalizeMathDelimiters('$$a=1\nb=2\n$$')).toBe('$$a=1\nb=2\n$$')
 })
 
+test('prose after a display close stays outside the math block', () => {
+  expect(normalizeMathDelimiters('$$\n\\frac{a}{b}\n$$ tail text')).toBe('$$\n\\frac{a}{b}\n$$\ntail text')
+  expect(normalizeMathDelimiters('Before.\n\n$$\n\\frac{a}{b}\n$$ tail text\n\nAfter.')).toBe('Before.\n\n$$\n\\frac{a}{b}\n$$\ntail text\n\nAfter.')
+  expect(normalizeMathDelimiters('$$\nx\n$$')).toBe('$$\nx\n$$')
+})
+
 test('code fences and inline code keep latex untouched', () => {
   expect(normalizeMathDelimiters('```tex\n\\(q_t\\)\n```')).toBe('```tex\n\\(q_t\\)\n```')
   expect(normalizeMathDelimiters('```tex\n$$x$$\n```')).toBe('```tex\n$$x$$\n```')
