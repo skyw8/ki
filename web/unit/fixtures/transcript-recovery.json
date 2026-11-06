@@ -17,6 +17,27 @@
         "contextEstimate": {
           "message": 4
         }
+      },
+      {
+        "type": "message",
+        "id": "a2",
+        "parentId": "a1",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "second imported reply"
+            }
+          ],
+          "timestamp": 3000,
+          "latencyMs": 200,
+          "durationMs": 0
+        },
+        "contextEstimate": {
+          "message": 6
+        }
       }
     ],
     "compactTurns": [
@@ -28,15 +49,18 @@
         "toolStates": [],
         "cumulativeElapsedMs": 300,
         "entryIds": [
-          "a1"
+          "a1",
+          "a2"
         ],
-        "visibleNodeIds": [],
+        "visibleNodeIds": [
+          "a2"
+        ],
         "omittedNodeIds": [
           "a1"
         ],
-        "hiddenCount": 2,
+        "hiddenCount": 1,
         "firstHiddenId": "a1",
-        "preview": "second imported reply",
+        "preview": "imported reply",
         "stats": {
           "turn": 1,
           "steps": 2,
@@ -83,6 +107,27 @@
             }
           ],
           "timestamp": 1000,
+          "durationMs": 0
+        },
+        "contextEstimate": {
+          "message": 2
+        }
+      },
+      {
+        "type": "message",
+        "id": "a",
+        "parentId": "u",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "timestamp": 1200,
+          "latencyMs": 200,
           "durationMs": 0
         },
         "contextEstimate": {
@@ -181,6 +226,7 @@
         "cumulativeElapsedMs": 6000,
         "entryIds": [
           "u",
+          "a",
           "empty-start",
           "empty-end",
           "failed-start",
@@ -191,13 +237,12 @@
         ],
         "visibleNodeIds": [
           "u",
+          "a",
           "empty-end",
           "failed-end",
           "checkpoint"
         ],
-        "hiddenCount": 1,
-        "firstHiddenId": "a",
-        "preview": "answer",
+        "hiddenCount": 0,
         "stats": {
           "turn": 1,
           "startedAt": 1000,
@@ -259,6 +304,27 @@
         }
       },
       {
+        "type": "message",
+        "id": "a",
+        "parentId": "u",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "timestamp": 1200,
+          "latencyMs": 200,
+          "durationMs": 0
+        },
+        "contextEstimate": {
+          "message": 2
+        }
+      },
+      {
         "type": "compaction_start",
         "id": "empty-start",
         "parentId": "a",
@@ -290,16 +356,16 @@
         "cumulativeElapsedMs": 200,
         "entryIds": [
           "u",
+          "a",
           "empty-start",
           "empty-end"
         ],
         "visibleNodeIds": [
           "u",
+          "a",
           "empty-end"
         ],
-        "hiddenCount": 1,
-        "firstHiddenId": "a",
-        "preview": "answer",
+        "hiddenCount": 0,
         "stats": {
           "turn": 1,
           "startedAt": 1000,
@@ -347,6 +413,27 @@
             }
           ],
           "timestamp": 1000,
+          "durationMs": 0
+        },
+        "contextEstimate": {
+          "message": 2
+        }
+      },
+      {
+        "type": "message",
+        "id": "a",
+        "parentId": "u",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "timestamp": 1200,
+          "latencyMs": 200,
           "durationMs": 0
         },
         "contextEstimate": {
@@ -406,6 +493,7 @@
         "cumulativeElapsedMs": 200,
         "entryIds": [
           "u",
+          "a",
           "empty-start",
           "empty-end",
           "failed-start",
@@ -413,12 +501,11 @@
         ],
         "visibleNodeIds": [
           "u",
+          "a",
           "empty-end",
           "failed-end"
         ],
-        "hiddenCount": 1,
-        "firstHiddenId": "a",
-        "preview": "answer",
+        "hiddenCount": 0,
         "stats": {
           "turn": 1,
           "startedAt": 1000,
@@ -484,6 +571,27 @@
         }
       },
       {
+        "type": "message",
+        "id": "inline-a",
+        "parentId": "inline-start",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "timestamp": 2000,
+          "latencyMs": 1000,
+          "durationMs": 0
+        },
+        "contextEstimate": {
+          "message": 2
+        }
+      },
+      {
         "type": "compaction",
         "id": "inline-checkpoint",
         "parentId": "inline-a",
@@ -517,16 +625,16 @@
         "entryIds": [
           "inline-u",
           "inline-start",
+          "inline-a",
           "inline-checkpoint",
           "inline-end"
         ],
         "visibleNodeIds": [
           "inline-u",
+          "inline-a",
           "inline-checkpoint"
         ],
-        "hiddenCount": 1,
-        "firstHiddenId": "inline-a",
-        "preview": "answer",
+        "hiddenCount": 0,
         "stats": {
           "turn": 1,
           "startedAt": 1000,
@@ -646,6 +754,27 @@
         }
       },
       {
+        "type": "message",
+        "id": "a",
+        "parentId": "u",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "timestamp": 1200,
+          "latencyMs": 200,
+          "durationMs": 0
+        },
+        "contextEstimate": {
+          "message": 2
+        }
+      },
+      {
         "type": "compaction_start",
         "id": "empty-start",
         "parentId": "a",
@@ -666,15 +795,15 @@
         "cumulativeElapsedMs": 200,
         "entryIds": [
           "u",
+          "a",
           "empty-start"
         ],
         "visibleNodeIds": [
           "u",
+          "a",
           "empty-start"
         ],
-        "hiddenCount": 1,
-        "firstHiddenId": "a",
-        "preview": "answer",
+        "hiddenCount": 0,
         "stats": {
           "turn": 1,
           "startedAt": 1000,
@@ -803,6 +932,25 @@
         "contextEstimate": {
           "message": 1
         }
+      },
+      {
+        "type": "message",
+        "id": "final",
+        "parentId": "notice",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "final"
+            }
+          ],
+          "durationMs": 0
+        },
+        "contextEstimate": {
+          "message": 2
+        }
       }
     ],
     "compactTurns": [
@@ -813,14 +961,16 @@
         "toolStates": [],
         "cumulativeElapsedMs": 0,
         "entryIds": [
-          "u"
+          "u",
+          "final"
         ],
         "visibleNodeIds": [
-          "u"
+          "u",
+          "final"
         ],
-        "hiddenCount": 4,
+        "hiddenCount": 3,
         "firstHiddenId": "call",
-        "preview": "final",
+        "preview": "notice",
         "stats": {
           "turn": 1,
           "steps": 2,
@@ -872,6 +1022,27 @@
         "contextEstimate": {
           "message": 4
         }
+      },
+      {
+        "type": "message",
+        "id": "final",
+        "parentId": "notice",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "final"
+            }
+          ],
+          "timestamp": 5000,
+          "latencyMs": 250,
+          "durationMs": 0
+        },
+        "contextEstimate": {
+          "message": 2
+        }
       }
     ],
     "compactTurns": [
@@ -883,14 +1054,16 @@
         "toolStates": [],
         "cumulativeElapsedMs": 4000,
         "entryIds": [
-          "human"
+          "human",
+          "final"
         ],
         "visibleNodeIds": [
-          "human"
+          "human",
+          "final"
         ],
-        "hiddenCount": 4,
+        "hiddenCount": 3,
         "firstHiddenId": "call",
-        "preview": "final",
+        "preview": "notice",
         "stats": {
           "turn": 1,
           "startedAt": 1000,
@@ -1067,6 +1240,25 @@
         "contextEstimate": {
           "message": 1
         }
+      },
+      {
+        "type": "message",
+        "id": "y-answer",
+        "parentId": "y",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "y-answer"
+            }
+          ],
+          "durationMs": 0
+        },
+        "contextEstimate": {
+          "message": 2
+        }
       }
     ],
     "compactTurns": [
@@ -1204,14 +1396,14 @@
         "toolStates": [],
         "cumulativeElapsedMs": 0,
         "entryIds": [
-          "y"
+          "y",
+          "y-answer"
         ],
         "visibleNodeIds": [
-          "y"
+          "y",
+          "y-answer"
         ],
-        "hiddenCount": 1,
-        "firstHiddenId": "y-answer",
-        "preview": "y-answer",
+        "hiddenCount": 0,
         "stats": {
           "turn": 5,
           "steps": 1,
@@ -1263,6 +1455,27 @@
         "contextEstimate": {
           "message": 5
         }
+      },
+      {
+        "type": "message",
+        "id": "final",
+        "parentId": "notice",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "final"
+            }
+          ],
+          "timestamp": 5000,
+          "latencyMs": 300,
+          "durationMs": 0
+        },
+        "contextEstimate": {
+          "message": 2
+        }
       }
     ],
     "compactTurns": [
@@ -1274,14 +1487,16 @@
         "toolStates": [],
         "cumulativeElapsedMs": 3000,
         "entryIds": [
-          "human"
+          "human",
+          "final"
         ],
         "visibleNodeIds": [
-          "human"
+          "human",
+          "final"
         ],
-        "hiddenCount": 5,
+        "hiddenCount": 4,
         "firstHiddenId": "directive",
-        "preview": "final",
+        "preview": "notice",
         "stats": {
           "turn": 1,
           "startedAt": 2000,
@@ -1317,6 +1532,27 @@
     "entries": [
       {
         "type": "message",
+        "id": "prelude-answer",
+        "parentId": "directive",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "prelude answer"
+            }
+          ],
+          "timestamp": 1600,
+          "latencyMs": 100,
+          "durationMs": 0
+        },
+        "contextEstimate": {
+          "message": 4
+        }
+      },
+      {
+        "type": "message",
         "id": "human",
         "parentId": "prelude-answer",
         "timestamp": "",
@@ -1345,14 +1581,16 @@
         "toolStates": [],
         "cumulativeElapsedMs": 100,
         "entryIds": [
+          "prelude-answer",
           "human"
         ],
         "visibleNodeIds": [
-          "human"
+          "human",
+          "prelude-answer"
         ],
-        "hiddenCount": 2,
+        "hiddenCount": 1,
         "firstHiddenId": "directive",
-        "preview": "prelude answer",
+        "preview": "runtime prelude",
         "stats": {
           "turn": 1,
           "startedAt": 2000,
@@ -1406,6 +1644,27 @@
         "contextEstimate": {
           "message": 4
         }
+      },
+      {
+        "type": "message",
+        "id": "prelude-answer",
+        "parentId": "directive",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "prelude answer"
+            }
+          ],
+          "timestamp": 1600,
+          "latencyMs": 100,
+          "durationMs": 0
+        },
+        "contextEstimate": {
+          "message": 4
+        }
       }
     ],
     "compactTurns": [
@@ -1417,15 +1676,18 @@
         "toolStates": [],
         "cumulativeElapsedMs": 600,
         "entryIds": [
-          "directive"
+          "directive",
+          "prelude-answer"
         ],
-        "visibleNodeIds": [],
+        "visibleNodeIds": [
+          "prelude-answer"
+        ],
         "omittedNodeIds": [
           "directive"
         ],
-        "hiddenCount": 2,
+        "hiddenCount": 1,
         "firstHiddenId": "directive",
-        "preview": "prelude answer",
+        "preview": "runtime prelude",
         "stats": {
           "turn": 1,
           "startedAt": 1000,
@@ -1479,6 +1741,27 @@
         "contextEstimate": {
           "message": 3
         }
+      },
+      {
+        "type": "message",
+        "id": "a1",
+        "parentId": "directive",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "first reply"
+            }
+          ],
+          "timestamp": 2000,
+          "latencyMs": 300,
+          "durationMs": 0
+        },
+        "contextEstimate": {
+          "message": 3
+        }
       }
     ],
     "compactTurns": [
@@ -1490,13 +1773,16 @@
         "toolStates": [],
         "cumulativeElapsedMs": 1000,
         "entryIds": [
-          "directive"
+          "directive",
+          "a1"
         ],
-        "visibleNodeIds": [],
+        "visibleNodeIds": [
+          "a1"
+        ],
         "omittedNodeIds": [
           "directive"
         ],
-        "hiddenCount": 3,
+        "hiddenCount": 2,
         "firstHiddenId": "directive",
         "preview": "notice",
         "stats": {
@@ -1552,6 +1838,27 @@
         "contextEstimate": {
           "message": 3
         }
+      },
+      {
+        "type": "message",
+        "id": "a2",
+        "parentId": "notice",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "final reply"
+            }
+          ],
+          "timestamp": 4000,
+          "latencyMs": 400,
+          "durationMs": 0
+        },
+        "contextEstimate": {
+          "message": 3
+        }
       }
     ],
     "compactTurns": [
@@ -1563,15 +1870,18 @@
         "toolStates": [],
         "cumulativeElapsedMs": 3000,
         "entryIds": [
-          "directive"
+          "directive",
+          "a2"
         ],
-        "visibleNodeIds": [],
+        "visibleNodeIds": [
+          "a2"
+        ],
         "omittedNodeIds": [
           "directive"
         ],
-        "hiddenCount": 4,
+        "hiddenCount": 3,
         "firstHiddenId": "directive",
-        "preview": "final reply",
+        "preview": "notice",
         "stats": {
           "turn": 1,
           "startedAt": 1000,
@@ -1623,6 +1933,25 @@
         "contextEstimate": {
           "message": 1
         }
+      },
+      {
+        "type": "message",
+        "id": "selected-a1",
+        "parentId": "u",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "selected-a1"
+            }
+          ],
+          "durationMs": 0
+        },
+        "contextEstimate": {
+          "message": 3
+        }
       }
     ],
     "compactTurns": [
@@ -1633,14 +1962,14 @@
         "toolStates": [],
         "cumulativeElapsedMs": 0,
         "entryIds": [
-          "u"
+          "u",
+          "selected-a1"
         ],
         "visibleNodeIds": [
-          "u"
+          "u",
+          "selected-a1"
         ],
-        "hiddenCount": 1,
-        "firstHiddenId": "selected-a1",
-        "preview": "selected-a1",
+        "hiddenCount": 0,
         "stats": {
           "turn": 1,
           "steps": 1,
@@ -1691,6 +2020,25 @@
         "contextEstimate": {
           "message": 1
         }
+      },
+      {
+        "type": "message",
+        "id": "answer",
+        "parentId": "work",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "final answer"
+            }
+          ],
+          "durationMs": 0
+        },
+        "contextEstimate": {
+          "message": 3
+        }
       }
     ],
     "compactTurns": [
@@ -1701,12 +2049,14 @@
         "toolStates": [],
         "cumulativeElapsedMs": 0,
         "entryIds": [
-          "u"
+          "u",
+          "answer"
         ],
         "visibleNodeIds": [
-          "u"
+          "u",
+          "answer"
         ],
-        "hiddenCount": 3,
+        "hiddenCount": 2,
         "firstHiddenId": "work",
         "preview": "context-only notice",
         "stats": {

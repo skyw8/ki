@@ -155,7 +155,7 @@ test('B1 golden runtime notice hydration preserves canonical turn, tools, steps 
     expect(new Set(state.records.map(r => r.turnId))).toEqual(new Set(['u']))
     expect(new Set(state.records.map(r => r.turn))).toEqual(new Set([1]))
     expect(userRequests(state.allEntries, state.leafId, state.nodes, state.compactTurns).map(r => r.id)).toEqual(['u'])
-    expect(folds(state)[0].count).toBe(4)
+    expect(folds(state)[0].count).toBe(3)
   }
 })
 
@@ -381,7 +381,7 @@ test('root prelude belongs to its first human identity without duplicate snapsho
     turnId: 'u', steps: 2, elapsedMs: 1_000,
   })
   expect(sessionStats(state)).toMatchObject({ turns: 1, turnElapsedMs: 1_000 })
-  expect(foldReplies(state.nodes, {}).map(n => n.id)).toEqual(['fold:u', 'u'])
+  expect(foldReplies(state.nodes, {}).map(n => n.id)).toEqual(['fold:u', 'u', 'final'])
 })
 
 test('authoritative recovery refreshes present metadata but projected or stale tails cannot erase it', () => {

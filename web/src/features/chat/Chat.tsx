@@ -869,10 +869,14 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     foldAnchor.current = null
     const scroll = scrollRef.current
     const row = scroll?.querySelector(`[data-testid="fold-row"][data-fold="${CSS.escape(anchor.id)}"]`)
-    if (scroll && row) {
+    if (!scroll || !row) return
+    const settle = (attempt: number) => {
       const delta = row.getBoundingClientRect().top - scroll.getBoundingClientRect().top - anchor.offset
-      if (Math.abs(delta) > 1) virtualizer.scrollBy(delta)
+      if (Math.abs(delta) <= 1) return
+      virtualizer.scrollBy(delta)
+      if (attempt < 2) requestAnimationFrame(() => settle(attempt + 1))
     }
+    settle(0)
   }, [items, scrollRef, virtualizer])
 
   useLayoutEffect(() => {

@@ -55,21 +55,28 @@ function isFoldable(n: ChatNode): boolean {
     (n.kind === 'user' && !isHumanPrompt(n.origin))
 }
 
-function hiddenReplyIds(rest: ChatNode[]): Set<string> {
+function hiddenReplyIds(rest: ChatNode[], keep: string): Set<string> {
   const foldable = rest.filter(isFoldable)
   const live = foldable.findIndex(isLive)
-  const hidden = foldable.filter((n, i) => (live < 0 || i < live) && !isVisibleReply(n))
+  const hidden = foldable.filter((n, i) => (live < 0 || i < live) && !isVisibleReply(n) && n.id !== keep)
   return new Set(hidden.map(n => n.id))
 }
 
 export function foldReplies(nodes: ChatNode[], opts: FoldOptions): ChatRenderItem[] {
   const turns = groupTurns(nodes)
+  let newest: ChatNode | undefined
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const n = nodes[i]
+    if (n.kind !== 'assistant') continue
+    if (n.text.length > 0 && nodes[i + 1]?.kind !== 'tool') newest = n
+    break
+  }
   const summaries = new Map(opts.summaries?.map(t => [t.id, t]))
   const loaded = new Set(opts.loadedTurnIds)
   const out: ChatRenderItem[] = []
   turns.forEach(turn => {
     const rest = turn.nodes.filter(n => n !== turn.user)
-    const hiddenIds = hiddenReplyIds(rest)
+    const hiddenIds = hiddenReplyIds(rest, newest?.id ?? '')
     const hidden = hiddenIds.size
     const summary = !loaded.has(turn.id) ? summaries.get(turn.id) : undefined
     const observed = new Set(rest.map(n => n.id))

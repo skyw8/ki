@@ -245,14 +245,16 @@ item**（可以是折叠行），而非必须存在的最后一个原始节点�
 compact 消息显示（见设置）**在 turn 内**折叠：每个 turn 的用户气泡始终保留；只有正文长度
 ≥50 个字符的 assistant 回复保留正文，工具调用、工具结果、较短回复以及 subagent 等
 runtime user-role 消息由 `lib/messageView.ts` 的 `foldReplies` 折成该 turn 内的一行，位于
-气泡与该 turn 可见回复之间；点该行就地展开，不重排时间线。
+气泡与该 turn 可见回复之间；点该行就地展开，不重排时间线。会话最后一条 assistant 回复
+（未被工具调用跟随）无论长短都保留正文。
 
 reading 或更早轮的操作锚定该行，原本 following 的最新人工轮继续跟随，`jumpToId` 落到折叠
 范围内会先自动展开再滚动（行本身带首个被折叠节点的 `data-msg-id`）。短列表和长列表使用
 同一个虚拟化实例与 DOM 外壳，折叠、分页或第 48 个节点不再切换列表结构。
 
 展开/收起保留显式意图：reading 不因几何贴底恢复 following；只有原本 following 且操作最新
-人工轮时继续跟随，更早轮转为 reading。仍在流式/运行中的节点永不折叠，运行中的最新 turn
+人工轮时继续跟随，更早轮转为 reading。折叠锚点的校正在布局后的连续两帧复查，抵消 end-anchored
+虚拟列表对新增行高的滚动补偿，仍以折叠行的精确屏幕位置为唯一判据。仍在流式/运行中的节点永不折叠，运行中的最新 turn
 也按同一内容规则折叠；陈旧标记由同一调用的持久化结果、下一模型请求或服务器
 `assistantAt` 边界清理，而不是按兄弟节点顺序猜测。
 
@@ -466,7 +468,8 @@ Agents 页的「上下文窗口上限」写 `toggles.json` 的 `agents.contextWi
 Message 页还有「消息显示」detailed / compact：未保存偏好、偏好值无效或浏览器存储不可用时默认
 compact，保留已保存的 detailed / compact 选择。compact 下每个 turn 的人工输入照常显示；只有
 正文长度 ≥50 个字符的 assistant 回复保留，工具调用/结果、较短回复和 subagent 等 runtime
-user-role 消息一起折叠成一行（带折叠条数与末条预览）。点折叠行可就地展开；最新人工 turn 的
+user-role 消息一起折叠成一行（带折叠条数与末条预览）。会话最后一条 assistant 回复无论长短
+都保留正文。点折叠行可就地展开；最新人工 turn 的
 折叠行仅在原本已 following 时保持跟随，始终钉住该 turn 最新那条回复的底部，而不是钉折叠行
 本身——展开引入的中间行不是 append，另有一次显式钉尾把新增行落到尾部，所以折叠行会随最新
 消息一起被移出虚拟窗口；更早的折叠行则暂停跟随并锚定该行原地不动。这是本机显示偏好，和
@@ -828,7 +831,8 @@ ready 与 run EOF，经 `TranscriptStore` 原子接纳后投影；运行状态�
 - **折叠计数只数回复节点**：`hiddenCount` 包含被折叠的 assistant、按调用 ID 去重的 tool 和
   runtime user 消息，不含 compaction、取消行及 aborted assistant。可见性只看内容：正文
   ≥50 字符的 assistant 回复与运行中节点保留，`visibleNodeIds` 可含生命周期元数据，因此
-  快照总数和重叠扣除按可折叠分类统计。无人工输入 turn 的隐藏 runtime 指令锚点只计一次。
+  快照总数和重叠扣除按可折叠分类统计。会话末尾最后一条 assistant 回复始终可见，不随长度
+  折叠。无人工输入 turn 的隐藏 runtime 指令锚点只计一次。
   刷新、逐条补全和展开不能制造额外折叠条目。
 
 ### 统一身份、载荷与响应权限

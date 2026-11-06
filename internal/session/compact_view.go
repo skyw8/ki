@@ -207,7 +207,7 @@ func BuildCompact(entries []Entry, leaf, before string) CompactPage {
 	prevPrompt, cacheReported := cacheBaseline(path[:base])
 	for i := start; i < end; i++ {
 		r := ranges[i]
-		turn, bodies, nextPrompt, nextReported := projectTurn(path[r.start:r.end], r.ordinal, prevPrompt, cacheReported)
+		turn, bodies, nextPrompt, nextReported := projectTurn(path[r.start:r.end], r.ordinal, prevPrompt, cacheReported, i == len(ranges)-1)
 		prevPrompt, cacheReported = nextPrompt, nextReported
 		turn.StepCount = completedSteps(path[:r.end])
 		turn.CumulativeElapsedMS = elapsed[i]
@@ -257,7 +257,7 @@ func BuildCompactTurn(entries []Entry, leaf, id string) (CompactPage, bool) {
 		part := path[r.start:r.end]
 		if slices.ContainsFunc(part, func(e Entry) bool { return e.ID == id }) {
 			prevPrompt, cacheReported := cacheBaseline(path[:r.start])
-			turn, bodies, _, _ := projectTurn(part, r.ordinal, prevPrompt, cacheReported)
+			turn, bodies, _, _ := projectTurn(part, r.ordinal, prevPrompt, cacheReported, r.end == len(path))
 			turn.StepCount = completedSteps(path[:r.end])
 			turn.CumulativeElapsedMS = elapsed[i]
 			return CompactPage{Entries: bodies, Turns: []CompactTurn{turn}, HasMore: r.ordinal > 1, OldestID: turn.ID}, true
@@ -276,10 +276,12 @@ func assistantTextRunes(e Entry) int {
 	return max(e.messageTextRunes, utf8.RuneCountInString(e.Message.Text()))
 }
 
-func projectTurn(path []Entry, ordinal int, prevPrompt int64, cacheReported bool) (CompactTurn, []Entry, int64, bool) {
+func projectTurn(path []Entry, ordinal int, prevPrompt int64, cacheReported bool, keepLast bool) (CompactTurn, []Entry, int64, bool) {
 	type node struct {
 		id, preview   string
 		entries       []int
+		reply         bool
+		toolCall      bool
 		visible       bool
 		alwaysVisible bool
 		suppressed    bool
@@ -323,7 +325,8 @@ func projectTurn(path []Entry, ordinal int, prevPrompt int64, cacheReported bool
 			batch = map[string]int{}
 			toolStates = []TurnToolState{}
 			lastStep = &TurnStep{Usage: m.Usage, TTFTMs: m.TTFTMs, LatencyMs: m.LatencyMs}
-			nodes = append(nodes, node{id: e.ID, preview: m.Text(), entries: []int{i}, visible: assistantTextRunes(e) >= compactVisibleTextRunes, alwaysVisible: m.StopReason == "aborted"})
+			replyAt := len(nodes)
+			nodes = append(nodes, node{id: e.ID, preview: m.Text(), entries: []int{i}, reply: true, visible: assistantTextRunes(e) >= compactVisibleTextRunes, alwaysVisible: m.StopReason == "aborted"})
 			stats.Steps++
 			stats.DurationMS += m.LatencyMs
 			assistantAt = max(assistantAt, entryMillis(e))
@@ -355,6 +358,7 @@ func projectTurn(path []Entry, ordinal int, prevPrompt int64, cacheReported bool
 			}
 			for _, c := range m.Content {
 				if c.Type == "toolCall" && c.ID != "" {
+					nodes[replyAt].toolCall = true
 					if _, exists := batch[c.ID]; !exists {
 						batch[c.ID] = len(toolStates)
 						toolStates = append(toolStates, TurnToolState{ID: c.ID})
@@ -475,6 +479,17 @@ func projectTurn(path []Entry, ordinal int, prevPrompt int64, cacheReported bool
 		}
 	}
 	nodes = slices.DeleteFunc(nodes, func(n node) bool { return n.suppressed })
+	if keepLast {
+		for i := len(nodes) - 1; i >= 0; i-- {
+			if !nodes[i].reply {
+				continue
+			}
+			if !nodes[i].toolCall && len(nodes[i].entries) > 0 && assistantTextRunes(path[nodes[i].entries[0]]) > 0 {
+				nodes[i].visible = true
+			}
+			break
+		}
+	}
 	stats.Tools = len(tools)
 	stats.ToolFailures = len(failedTools)
 	stats.StartedAt, stats.ElapsedMS = clock.start, clock.elapsed()

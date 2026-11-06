@@ -55,8 +55,10 @@ test('foldReplies shows only assistant prose at or above the visible threshold',
 test('foldReplies counts characters rather than UTF-16 units', () => {
   const emoji = '😀'.repeat(COMPACT_VISIBLE_TEXT_CHARS)
   expect(foldReplies([user('u', 'human'), asst('a', emoji)], {}).map(i => i.id)).toEqual(['u', 'a'])
-  expect(foldReplies([user('u', 'human'), asst('a', '😀'.repeat(COMPACT_VISIBLE_TEXT_CHARS - 1))], {}).map(i => i.id))
-    .toEqual(['u', 'fold:u'])
+  expect(foldReplies([user('u', 'human'), asst('a', '😀'.repeat(COMPACT_VISIBLE_TEXT_CHARS - 1)), asst('b', prose())], {}).map(i => i.id))
+    .toEqual(['u', 'fold:u', 'b'])
+  expect(foldReplies([user('u', 'human'), asst('short', '😀'.repeat(COMPACT_VISIBLE_TEXT_CHARS - 1))], {}).map(i => i.id))
+    .toEqual(['u', 'short'])
 })
 
 test('foldReplies folds tools, runtime notifications and short replies', () => {
@@ -70,7 +72,7 @@ test('foldReplies folds tools, runtime notifications and short replies', () => {
   expect(turns[0].nodes.map(n => n.id)).toEqual(['u1', 'a1', 'notice', 't1', 'a2'])
 
   const items = foldReplies(nodes, {})
-  expect(items.map(i => i.id)).toEqual(['u1', 'fold:u1', 'a2', 'u2', 'fold:u2'])
+  expect(items.map(i => i.id)).toEqual(['u1', 'fold:u1', 'a2', 'u2', 'a3'])
   const folded = items.find(i => i.kind === 'fold')
   expect(folded && folded.kind === 'fold' ? folded.nodes.map(n => n.id) : []).toEqual(['a1', 'notice', 't1'])
   expect(folded?.kind === 'fold' ? folded.count : 0).toBe(3)
@@ -80,7 +82,7 @@ test('foldReplies folds an opening directive while keeping its long answer', () 
   const nodes = [user('directive', 'subagent directive', 'agent'), asst('answer', prose())]
   expect(foldReplies(nodes, {}).map(i => i.id)).toEqual(['fold:directive', 'answer'])
   expect(foldReplies([user('directive', 'subagent directive', 'agent'), asst('answer')], {}).map(i => i.id))
-    .toEqual(['fold:directive'])
+    .toEqual(['fold:directive', 'answer'])
 })
 
 test('foldReplies keeps every user bubble and folds short replies per turn', () => {
@@ -90,7 +92,7 @@ test('foldReplies keeps every user bubble and folds short replies per turn', () 
   ]
   expect(foldReplies(nodes, {}).map(i => i.id)).toEqual([
     'u1', 'fold:u1', 'a1b',
-    'u2', 'fold:u2',
+    'u2', 'fold:u2', 'a2b',
   ])
   const folded = foldReplies(nodes, {}).find(i => i.kind === 'fold')
   expect(folded && folded.kind === 'fold' ? folded.nodes.map(n => n.id) : []).toEqual(['a1a', 't1'])
@@ -99,9 +101,9 @@ test('foldReplies keeps every user bubble and folds short replies per turn', () 
 
 test('foldReplies folds nodes interleaved after visible prose into the same row', () => {
   const nodes = [user('u1', 'one'), asst('long', prose()), tool('t1'), asst('short')]
-  expect(foldReplies(nodes, {}).map(i => i.id)).toEqual(['u1', 'fold:u1', 'long'])
+  expect(foldReplies(nodes, {}).map(i => i.id)).toEqual(['u1', 'fold:u1', 'long', 'short'])
   const folded = foldReplies(nodes, {}).find(i => i.kind === 'fold')
-  expect(folded && folded.kind === 'fold' ? folded.nodes.map(n => n.id) : []).toEqual(['t1', 'short'])
+  expect(folded && folded.kind === 'fold' ? folded.nodes.map(n => n.id) : []).toEqual(['t1'])
 })
 
 test('foldReplies opens a fold in place without reordering the turn', () => {
@@ -133,9 +135,9 @@ test('foldReplies never folds a compaction row', () => {
   expect(folded && folded.kind === 'fold' ? folded.nodes.map(n => n.id) : []).toEqual(['a1a'])
 
   expect(foldReplies([user('u1', 'one'), asst('a1a'), compact('c1')], {}).map(i => i.id))
-    .toEqual(['u1', 'fold:u1', 'c1'])
+    .toEqual(['u1', 'a1a', 'c1'])
   expect(foldReplies([user('u1', 'one'), asst('a1', prose()), compact('c1'), asst('a2')], {}).map(i => i.id))
-    .toEqual(['u1', 'fold:u1', 'a1', 'c1'])
+    .toEqual(['u1', 'a1', 'c1', 'a2'])
 })
 
 test('foldReplies never folds a cancellation row', () => {
@@ -145,7 +147,7 @@ test('foldReplies never folds a cancellation row', () => {
   expect(folded && folded.kind === 'fold' ? folded.nodes.map(n => n.id) : []).toEqual(['a1a'])
 
   expect(foldReplies([user('u1', 'one'), asst('a1'), cancelled('x1')], {}).map(i => i.id))
-    .toEqual(['u1', 'fold:u1', 'x1'])
+    .toEqual(['u1', 'a1', 'x1'])
 })
 
 test('foldReplies keeps a legacy aborted assistant visible for its cancellation row', () => {

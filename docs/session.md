@@ -327,9 +327,11 @@ Windows 的 `os.Stat(path)` 会延迟到 `os.SameFile` 才按路径读取 file I
 不位于折叠区中途。
 
 每轮按内容决定可见区：只有正文（不含 thinking 与 toolCall）长度 ≥50 个字符的 assistant
-回复保留正文；人工 input、压缩/中止生命周期行以及仍在运行的节点始终显示，其余 assistant
-回复、工具调用/结果和 runtime user-role 消息（origin 非空且不以 `extension:` 开头，例如
-subagent 指令、完成通知和 context-only 邮件）折叠并计入 `hiddenCount`。可见与隐藏节点可以
+回复保留正文；人工 input、压缩/中止生命周期行以及仍在运行的节点始终显示。会话末尾最后一条
+assistant 回复无论长短都保留正文，不参与折叠；该回复若发起工具调用，则视为中间步骤，仍按
+内容规则处理。其余 assistant 回复、工具调用/结果和 runtime user-role 消息（origin 非空且
+不以 `extension:` 开头，例如 subagent 指令、完成通知和 context-only 邮件）折叠并计入
+`hiddenCount`。可见与隐藏节点可以
 交错，`entryIds` 按原始顺序只保留可见 entry，折叠区用整轮计数、预览和统计表示。
 runtime-only 会话仍保留首个可渲染节点的正文作为稳定 turn 锚点，即使该节点隐藏。跨大 turn
 不会循环下载已折叠的工具往返。初次读取会用增量 transcript 缓存确定完整分支与 turn 边界，

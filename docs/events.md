@@ -131,7 +131,8 @@ WebUI 直接按 entry id 展示该值，不从稀疏历史窗口猜测前序 bas
 
 Runtime user-role 通知和其他非人工节点一样折叠：compact 只按内容保留正文 ≥50 字符的
 assistant 回复以及人工 input；工具调用/结果、较短回复和 runtime 通知都计入 `hiddenCount`。
-正在运行的节点始终显示，压缩/中止等生命周期元数据始终单独显示。
+会话末尾最后一条 assistant 回复无论长短都保留。正在运行的节点始终显示，压缩/中止等生命周期
+元数据始终单独显示。
 
 Code Mode 的嵌套执行是例外：复用 `tool_execution_start/update/end`，但带 `parentCallId`、
 `cellId` 以及父进程生成的 `toolCallId`，以有界结构化 details 先持久化，再携带该审计 entry

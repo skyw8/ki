@@ -208,7 +208,7 @@ test('Go compact page cannot resurrect a branch recovered while its gesture gate
   await settle()
   expect(store.current.leafId).toBe('selected-a1')
   expect(store.current.compactTurns?.map(turn => turn.tailId)).toEqual(['selected-a1'])
-  expect(store.current.nodes.map(node => node.id)).toEqual(['u'])
+  expect(store.current.nodes.map(node => node.id)).toEqual(['u', 'selected-a1'])
   expect(store.current.hasMore).toBe(false)
   expect(history.getSnapshot().olderError).toBe(false)
 })
@@ -322,14 +322,14 @@ test('full turn pagination deduplicates and commits all bodies only after the fi
 test('turn expansion arriving after branch recovery cannot mark the new target loaded', async () => {
   const { api, store, history } = setup(detail('oldPage', 'old-a2'), { presentation: compact })
   const task = history.requestTurn('u')
-  store.commit(store.capture('tail'), detail('selected', 'selected-a1'))
+  store.commit(store.capture('tail'), detail('notice', 'final'))
   expect(await task).toBe(false)
   expect(api.reads[0].opts?.signal?.aborted).toBe(true)
   api.reads[0].result.resolve({ id: 's', entries: [entry('u', undefined, 'user'), entry('old-a1', 'u'), entry('old-a2', 'old-a1')] })
   await settle()
-  expect(store.current.nodes.map(node => node.id)).toEqual(['u'])
+  expect(store.current.nodes.map(node => node.id)).toEqual(['u', 'final'])
   expect(store.current.loadedTurnIds ?? []).not.toContain('u')
-  expect(store.current.compactTurns?.[0].tailId).toBe('selected-a1')
+  expect(store.current.compactTurns?.[0].tailId).toBe('final')
 })
 
 test('turn expansion must include the target summary tail', async () => {
@@ -479,7 +479,7 @@ test('late body caching does not grant old compact metadata authority over the r
   expect(store.current.entries.some(body => body.id === 'old-a2')).toBe(true)
   expect(store.current.leafId).toBe('selected-a1')
   expect(store.current.compactTurns?.map(turn => turn.tailId)).toEqual(['selected-a1'])
-  expect(store.current.nodes.map(node => node.id)).toEqual(['u'])
+  expect(store.current.nodes.map(node => node.id)).toEqual(['u', 'selected-a1'])
   expect(store.current.hasMore).toBe(false)
 })
 

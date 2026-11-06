@@ -686,7 +686,7 @@ test('context separates system sources and browses the tool input of each reques
     await expandWorkspaces(page)
     await page.getByTestId('session-title').filter({ hasText: 'Context sources fixture' }).click()
     await sendPrompt(page, 'e2e-bash: echo KI-CONTEXT-TOOL-MARKER')
-    await expect(page.getByTestId('fold-row')).toContainText('已折叠 3 条消息')
+    await expect(page.getByTestId('fold-row')).toContainText('已折叠 2 条消息')
     await page.getByTestId('tab-context').click()
     await expect(page.getByTestId('context-step')).toHaveCount(2)
     const viewport = page.viewportSize()

@@ -141,11 +141,15 @@ func TestCompactLifecycleIsDurableUnfoldedMetadata(t *testing.T) {
 func TestCompactPagesWholeTurnsWithoutHiddenBodies(t *testing.T) {
 	entries := compactFixture(7, 320)
 	page := BuildCompact(entries, "", "")
-	if len(page.Turns) != 4 || len(page.Entries) != 4 || page.OldestID != "u3" || !page.HasMore {
+	if len(page.Turns) != 4 || len(page.Entries) != 5 || page.OldestID != "u3" || !page.HasMore {
 		t.Fatalf("tail: turns=%d entries=%d cursor=%s more=%v", len(page.Turns), len(page.Entries), page.OldestID, page.HasMore)
 	}
-	for _, turn := range page.Turns {
-		if turn.HiddenCount != 641 || turn.Stats.Steps != 321 || turn.Stats.Input != 3200 || turn.Stats.Tools != 320 || turn.Stats.ToolFailures != 0 {
+	for i, turn := range page.Turns {
+		hidden := 641
+		if i == len(page.Turns)-1 {
+			hidden = 640
+		}
+		if turn.HiddenCount != hidden || turn.Stats.Steps != 321 || turn.Stats.Input != 3200 || turn.Stats.Tools != 320 || turn.Stats.ToolFailures != 0 {
 			t.Fatalf("incomplete turn summary: %+v", turn)
 		}
 	}
@@ -252,14 +256,14 @@ func TestCompactProjectionKeepsFoldAnchorForMachineOnlyTurn(t *testing.T) {
 		{Type: "message", ID: "answer", ParentID: "directive", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "done"}}}},
 	}
 	page := BuildCompact(entries, "", "")
-	if len(page.Turns) != 1 || page.Turns[0].ID != "directive" || page.Turns[0].HiddenCount != 2 {
+	if len(page.Turns) != 1 || page.Turns[0].ID != "directive" || page.Turns[0].HiddenCount != 1 {
 		t.Fatalf("machine-only turn: %+v", page)
 	}
 	if page.Turns[0].Stats.Turn != 1 {
 		t.Fatalf("runtime-only turn must start at ordinal 1: %+v", page.Turns[0])
 	}
-	if !slices.Equal(page.Turns[0].VisibleNodeIDs, []string{}) || !slices.Equal(page.Turns[0].EntryIDs, []string{"directive"}) {
-		t.Fatalf("missing stable folded runtime anchor: %+v", page)
+	if !slices.Equal(page.Turns[0].VisibleNodeIDs, []string{"answer"}) || !slices.Equal(page.Turns[0].EntryIDs, []string{"directive", "answer"}) {
+		t.Fatalf("missing stable machine turn anchor: %+v", page)
 	}
 }
 
@@ -405,11 +409,14 @@ func TestCompactProjectionNeverFoldsCompaction(t *testing.T) {
 	}
 	page := BuildCompact(entries, "", "")
 	turn := page.Turns[0]
-	if turn.HiddenCount != 2 || !slices.Equal(turn.VisibleNodeIDs, []string{"u1", "c1"}) {
-		t.Fatalf("short prose should fold while compaction stays visible: %+v", turn)
+	if turn.HiddenCount != 1 || !slices.Equal(turn.VisibleNodeIDs, []string{"u1", "a2", "c1"}) {
+		t.Fatalf("earlier prose should fold while the last reply and compaction stay visible: %+v", turn)
 	}
-	if slices.ContainsFunc(page.Entries, func(e Entry) bool { return e.ID == "a1" || e.ID == "a2" }) {
+	if slices.ContainsFunc(page.Entries, func(e Entry) bool { return e.ID == "a1" }) {
 		t.Fatal("folded reply leaked into the compact page")
+	}
+	if !slices.ContainsFunc(page.Entries, func(e Entry) bool { return e.ID == "a2" }) {
+		t.Fatal("last reply body must stay visible")
 	}
 	if !slices.ContainsFunc(page.Entries, func(e Entry) bool { return e.ID == "c1" }) {
 		t.Fatal("compaction body must stay visible on its own row")

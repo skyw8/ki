@@ -73,7 +73,7 @@ test('a stale running tool folds away, stays settled after a reclaim, and never 
 
   await expect(page.getByTestId('turn-divider')).toHaveCount(1)
   await expect(page.getByTestId('turn-divider')).not.toHaveAttribute('data-live')
-  await expect(page.getByTestId('fold-row').locator('.fold-row-count')).toHaveText('已折叠 82 条消息')
+  await expect(page.getByTestId('fold-row').locator('.fold-row-count')).toHaveText('已折叠 81 条消息')
   await expect(page.getByTestId('tool-card')).toHaveCount(0)
 
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))

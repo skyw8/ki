@@ -29,14 +29,14 @@ test('older runtime notifications fold while the human prompt stays visible afte
   const detail = await page.request.get(`/v1/sessions/${id}?view=compact`, { headers })
   expect(detail.ok()).toBeTruthy()
   const snapshot = await detail.json() as SessionDetail
-  expect(snapshot.compactTurns?.[0].hiddenCount).toBe(4)
-  expect(snapshot.compactTurns?.[0].visibleNodeIds).toEqual(['u'])
-  expect(snapshot.entries?.map(e => e.id)).toEqual(['u'])
+  expect(snapshot.compactTurns?.[0].hiddenCount).toBe(3)
+  expect(snapshot.compactTurns?.[0].visibleNodeIds).toEqual(['u', 'final'])
+  expect(snapshot.entries?.map(e => e.id)).toEqual(['u', 'final'])
   const assertVisible = async () => {
-    await expect(page.getByTestId('assistant-message')).toHaveCount(0)
+    await expect(page.getByTestId('assistant-message')).toHaveCount(1)
     await expect(page.getByRole('note')).toHaveCount(0)
     await expect(page.locator('[data-item-key="middle"]')).toHaveCount(0)
-    await expect(page.getByTestId('fold-row')).toContainText('已折叠 4 条消息')
+    await expect(page.getByTestId('fold-row')).toContainText('已折叠 3 条消息')
   }
   await page.goto('/')
   await openSessionRow(page, title)
@@ -48,7 +48,7 @@ test('older runtime notifications fold while the human prompt stays visible afte
   await expect(page.getByTestId('assistant-message')).toHaveCount(2)
   await expect(page.getByRole('note')).toHaveCount(2)
   await expect(page.getByRole('note').first()).toContainText('Middle runtime notice')
-  await expect(page.getByTestId('fold-row')).toContainText('已折叠 4 条消息')
+  await expect(page.getByTestId('fold-row')).toContainText('已折叠 3 条消息')
   await page.getByTestId('fold-row-btn').click()
   await assertVisible()
 })
