@@ -129,7 +129,7 @@ assistant `message_end` 可在外层事件携带 `cacheMiss: {missedTokens, miss
 同一投影。它是 view-only 诊断，不属于 `message` / provider `Usage`，也不写入 JSONL。
 WebUI 直接按 entry id 展示该值，不从稀疏历史窗口猜测前序 baseline。
 
-Runtime user-role 通知和其他非人工节点一样折叠：compact 只按内容保留正文 ≥300 字符的
+Runtime user-role 通知和其他非人工节点一样折叠：compact 只按内容保留正文 ≥50 字符的
 assistant 回复以及人工 input；工具调用/结果、较短回复和 runtime 通知都计入 `hiddenCount`。
 正在运行的节点始终显示，压缩/中止等生命周期元数据始终单独显示。
 

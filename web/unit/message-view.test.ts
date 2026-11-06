@@ -43,6 +43,7 @@ test('groupTurns includes an imported prelude in the first human turn like the s
 })
 
 test('foldReplies shows only assistant prose at or above the visible threshold', () => {
+  expect(COMPACT_VISIBLE_TEXT_CHARS).toBe(50)
   const short = asst('short', prose(COMPACT_VISIBLE_TEXT_CHARS - 1))
   const exact = asst('exact', prose(COMPACT_VISIBLE_TEXT_CHARS))
   expect(foldReplies([user('u', 'human'), short, exact], {}).map(i => i.id))

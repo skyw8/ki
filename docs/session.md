@@ -326,7 +326,7 @@ Windows 的 `os.Stat(path)` 会延迟到 `os.SameFile` 才按路径读取 file I
 `entries`、`compactTurns`、`hasMore`、`oldestId`。`oldestId` 为最早返回 turn 的输入 id，
 不位于折叠区中途。
 
-每轮按内容决定可见区：只有正文（不含 thinking 与 toolCall）长度 ≥300 个字符的 assistant
+每轮按内容决定可见区：只有正文（不含 thinking 与 toolCall）长度 ≥50 个字符的 assistant
 回复保留正文；人工 input、压缩/中止生命周期行以及仍在运行的节点始终显示，其余 assistant
 回复、工具调用/结果和 runtime user-role 消息（origin 非空且不以 `extension:` 开头，例如
 subagent 指令、完成通知和 context-only 邮件）折叠并计入 `hiddenCount`。可见与隐藏节点可以
@@ -366,7 +366,7 @@ metadata 索引把 assistant 正文压成短预览，因此 `ReadTranscript` 解
 slim entry 页；其 `hasMore` / `oldestId` 是展开的局部游标，不能覆盖会话历史边界。
 `view=compact&turn=<entryId>` 可重新投影某个已知 turn，也可把 detailed 页边界所在的
 半轮转换成完整 compact 轮。页预算通过缩小完整 turn 数量或进一步缩略可见正文满足；可见
-assistant 正文至少保留 300 字符的 UTF-8 前缀，避免缩略后与可见性判断不一致，且不能把一个
+assistant 正文至少保留 50 字符的 UTF-8 前缀，避免缩略后与可见性判断不一致，且不能把一个
 compact turn 截成两页。detailed 的计数分页契约保持不变。
 
 ## 只读投影

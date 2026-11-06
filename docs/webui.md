@@ -241,7 +241,7 @@ item**（可以是折叠行），而非必须存在的最后一个原始节点�
 #### 折叠
 
 compact 消息显示（见设置）**在 turn 内**折叠：每个 turn 的用户气泡始终保留；只有正文长度
-≥300 个字符的 assistant 回复保留正文，工具调用、工具结果、较短回复以及 subagent 等
+≥50 个字符的 assistant 回复保留正文，工具调用、工具结果、较短回复以及 subagent 等
 runtime user-role 消息由 `lib/messageView.ts` 的 `foldReplies` 折成该 turn 内的一行，位于
 气泡与该 turn 可见回复之间；点该行就地展开，不重排时间线。
 
@@ -463,7 +463,7 @@ Agents 页的「上下文窗口上限」写 `toggles.json` 的 `agents.contextWi
 
 Message 页还有「消息显示」detailed / compact：未保存偏好、偏好值无效或浏览器存储不可用时默认
 compact，保留已保存的 detailed / compact 选择。compact 下每个 turn 的人工输入照常显示；只有
-正文长度 ≥300 个字符的 assistant 回复保留，工具调用/结果、较短回复和 subagent 等 runtime
+正文长度 ≥50 个字符的 assistant 回复保留，工具调用/结果、较短回复和 subagent 等 runtime
 user-role 消息一起折叠成一行（带折叠条数与末条预览）。点折叠行可就地展开；最新人工 turn 的
 折叠行仅在原本已 following 时保持跟随，始终钉住该 turn 最新那条回复的底部，而不是钉折叠行
 本身——展开引入的中间行不是 append，另有一次显式钉尾把新增行落到尾部，所以折叠行会随最新
@@ -825,7 +825,7 @@ ready 与 run EOF，经 `TranscriptStore` 原子接纳后投影；运行状态�
   过去耗时里减掉；新 prompt 确认 ID 后仍从该 prompt 的服务端时间戳起算。
 - **折叠计数只数回复节点**：`hiddenCount` 包含被折叠的 assistant、按调用 ID 去重的 tool 和
   runtime user 消息，不含 compaction、取消行及 aborted assistant。可见性只看内容：正文
-  ≥300 字符的 assistant 回复与运行中节点保留，`visibleNodeIds` 可含生命周期元数据，因此
+  ≥50 字符的 assistant 回复与运行中节点保留，`visibleNodeIds` 可含生命周期元数据，因此
   快照总数和重叠扣除按可折叠分类统计。无人工输入 turn 的隐藏 runtime 指令锚点只计一次。
   刷新、逐条补全和展开不能制造额外折叠条目。
 

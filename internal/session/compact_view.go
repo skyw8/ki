@@ -267,7 +267,7 @@ func BuildCompactTurn(entries []Entry, leaf, id string) (CompactPage, bool) {
 }
 
 // compactVisibleTextRunes is the assistant prose length that stays visible when a turn is folded.
-const compactVisibleTextRunes = 300
+const compactVisibleTextRunes = 50
 
 func assistantTextRunes(e Entry) int {
 	if e.Message == nil {

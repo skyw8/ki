@@ -2,7 +2,7 @@
 
 ## Symptoms
 
-After the compact view started keeping only assistant prose of at least 300
+After the compact view started keeping only assistant prose of at least 50
 characters, the browser showed every assistant reply folded as soon as the
 session was served from the metadata transcript cache. The same session
 rendered correctly through the CLI's offline path, and the full-entry
@@ -37,6 +37,6 @@ self-sustaining.
 ## Regression coverage
 
 `TestIndexedTranscriptMatchesFullProjections` compares the indexed and full
-compact projections, and the server compact view test keeps a 300-rune
-assistant reply visible through the metadata cache. Both failed before the
-decoder carried the length and pass afterwards.
+compact projections, and the server compact view test keeps an assistant reply
+far above the threshold visible through the metadata cache. Both failed before
+the decoder carried the length and pass afterwards.

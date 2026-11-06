@@ -218,7 +218,7 @@ function seedBigFoldSession(home: string, cwd: string): { title: string; userNod
         role: 'assistant',
         content: [
           { type: 'thinking', thinking: `Step ${n}: check the tree before the release.` },
-          { type: 'text', text: `Checking step ${n} of the release so the notes stay accurate.` },
+          { type: 'text', text: `Check step ${n}.` },
           { type: 'toolCall', id: callId, name: 'exec_command', arguments: { cmd: `cd /data/hgy/ki && go test ./internal/server -run TestReplay -count=1` } },
         ],
         timestamp: at(), provider: 'deepseek', model: 'deepseek-flash', stopReason: 'toolUse', durationMs: 0,

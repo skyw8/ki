@@ -9,7 +9,7 @@ export type MessageViewMode = 'detailed' | 'compact'
 
 export type MessageView = { mode: MessageViewMode }
 
-export const COMPACT_VISIBLE_TEXT_CHARS = 300
+export const COMPACT_VISIBLE_TEXT_CHARS = 50
 
 const MODE_KEY = 'ki-message-view'
 
